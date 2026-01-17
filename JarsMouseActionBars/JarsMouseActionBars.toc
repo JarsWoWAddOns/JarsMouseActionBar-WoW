@@ -1,0 +1,9 @@
+## Interface: 120001
+## Title: Jar's Mouse Action Bars
+## Notes: Mirrors action bar buttons next to mouse cursor
+## Author: Jar
+## Version: 1.0
+## SavedVariables: JarsMouseActionBarsDB
+## SavedVariablesPerCharacter: JarsMouseActionBarsCharDB
+
+JarsMouseActionBars.lua
