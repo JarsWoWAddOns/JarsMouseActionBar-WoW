@@ -4,19 +4,44 @@
 -- Configuration
 local MAX_BUTTONS = 12  -- Default number of buttons to show
 
--- Initialize saved variables
-local function InitDB()
-    if not JarsMouseActionBarsDB then
-        JarsMouseActionBarsDB = {
-            iconSize = 36,
-            cursorOffsetX = 5,
-            cursorOffsetY = 5,
-            buttonsPerRow = 6,
-        }
+-- Saved variables (per-character)
+JarsMouseActionBarsDB = JarsMouseActionBarsDB or {}
+
+-- Profile management
+local currentProfile = "default"
+local activeProfile = {}
+
+-- Get current spec and talent loadout for profile naming
+local function GetCurrentProfileKey()
+    local specIndex = GetSpecialization()
+    if not specIndex then return "default" end
+    
+    local specID = GetSpecializationInfo(specIndex)
+    if not specID then return "default" end
+    
+    -- Try to get active talent loadout if API exists
+    local talentLoadoutID = "base"
+    if C_ClassTalents and C_ClassTalents.GetActiveConfigID then
+        local configID = C_ClassTalents.GetActiveConfigID()
+        if configID then
+            talentLoadoutID = tostring(configID)
+        end
     end
     
-    if not JarsMouseActionBarsCharDB then
-        JarsMouseActionBarsCharDB = {
+    -- Format: spec123_talent456
+    return "spec" .. specID .. "_talent" .. talentLoadoutID
+end
+
+-- Get or create profile data
+local function GetProfile(profileKey)
+    profileKey = profileKey or currentProfile
+    
+    if not JarsMouseActionBarsDB.profiles then
+        JarsMouseActionBarsDB.profiles = {}
+    end
+    
+    if not JarsMouseActionBarsDB.profiles[profileKey] then
+        JarsMouseActionBarsDB.profiles[profileKey] = {
             actionSlots = {
                 1, 2, 3, 4, 5, 6,  -- Default: First 6 slots of action bar 1
                 61, 62, 63, 64, 65, 66  -- Default: First 6 slots of action bar 6
@@ -24,10 +49,54 @@ local function InitDB()
         }
     end
     
-    -- Ensure we have 12 slots
-    for i = 1, MAX_BUTTONS do
-        if not JarsMouseActionBarsCharDB.actionSlots[i] then
-            JarsMouseActionBarsCharDB.actionSlots[i] = i
+    return JarsMouseActionBarsDB.profiles[profileKey]
+end
+
+-- Initialize global settings (shared across all profiles)
+local function InitializeGlobalSettings()
+    if not JarsMouseActionBarsDB.global then
+        JarsMouseActionBarsDB.global = {
+            iconSize = 36,
+            cursorOffsetX = 5,
+            cursorOffsetY = 5,
+            buttonsPerRow = 6,
+        }
+    end
+end
+
+-- Switch to a different profile
+local function LoadProfile(profileKey)
+    currentProfile = profileKey or GetCurrentProfileKey()
+    activeProfile = GetProfile(currentProfile)
+    
+    -- Update tracker if it exists
+    if trackerFrame then
+        UpdateButtons()
+    end
+    
+    -- Update config frame if it exists and is visible
+    if configFrame and configFrame:IsShown() then
+        -- Update profile label
+        if configFrame.profileLabel then
+            local specIndex = GetSpecialization()
+            if specIndex then
+                local _, specName = GetSpecializationInfo(specIndex)
+                local talentText = ""
+                if C_ClassTalents and C_ClassTalents.GetActiveConfigID then
+                    local configID = C_ClassTalents.GetActiveConfigID()
+                    if configID then
+                        talentText = " (Loadout " .. configID .. ")"
+                    end
+                end
+                configFrame.profileLabel:SetText("Profile: " .. (specName or "Unknown") .. talentText)
+            else
+                configFrame.profileLabel:SetText("Profile: Default")
+            end
+        end
+        
+        -- Reload the config UI to show new profile data
+        if configFrame.Reload then
+            configFrame:Reload()
         end
     end
 end
@@ -35,14 +104,16 @@ end
 -- Forward declarations
 local trackerFrame
 local configFrame
+local RecreateTrackerFrame  -- Forward declaration
+local UpdateButtons  -- Forward declaration
 
 -- Create tracker frame with action button mirrors
 local function CreateTrackerFrame()
     local frame = CreateFrame("Frame", "JMAB_Tracker", UIParent)
     
-    local iconSize = JarsMouseActionBarsDB.iconSize or 36
+    local iconSize = JarsMouseActionBarsDB.global.iconSize or 36
     local spacing = 2
-    local buttonsPerRow = JarsMouseActionBarsDB.buttonsPerRow or 6
+    local buttonsPerRow = JarsMouseActionBarsDB.global.buttonsPerRow or 6
     local rows = math.ceil(MAX_BUTTONS / buttonsPerRow)
     
     local frameWidth = iconSize * buttonsPerRow + spacing * (buttonsPerRow - 1)
@@ -93,10 +164,18 @@ local function CreateTrackerFrame()
         button.count:SetPoint("BOTTOMRIGHT", -2, 2)
         
         -- Overlay glow (for spell activation procs)
-        if ActionButton_ShowOverlayGlow then
-            button.overlay = CreateFrame("Frame", nil, button, "ActionBarButtonSpellActivationAlert")
-            button.overlay:Hide()
-        end
+        button.overlay = CreateFrame("Frame", "JMAB_Button" .. i .. "Overlay", button)
+        button.overlay:SetAllPoints(button)
+        
+        -- Create glow texture
+        button.overlay.spark = button.overlay:CreateTexture(nil, "OVERLAY")
+        button.overlay.spark:SetTexture("Interface\\SpellActivationOverlay\\IconAlert")
+        button.overlay.spark:SetBlendMode("ADD")
+        button.overlay.spark:SetTexCoord(0.00781250, 0.50781250, 0.27734375, 0.52734375)
+        button.overlay.spark:SetPoint("CENTER", button, "CENTER", 0, 0)
+        button.overlay.spark:SetSize(iconSize * 1.4, iconSize * 1.4)
+        
+        button.overlay:Hide()
         
         button:Hide()
         frame.buttons[i] = button
@@ -108,8 +187,8 @@ local function CreateTrackerFrame()
     frame:SetScript("OnUpdate", function(self, elapsed)
         local x, y = GetCursorPosition()
         local scale = UIParent:GetEffectiveScale()
-        local offsetX = JarsMouseActionBarsDB.cursorOffsetX or 5
-        local offsetY = JarsMouseActionBarsDB.cursorOffsetY or 5
+        local offsetX = JarsMouseActionBarsDB.global.cursorOffsetX or 5
+        local offsetY = JarsMouseActionBarsDB.global.cursorOffsetY or 5
         
         local newX = (x / scale) + offsetX
         local newY = (y / scale) + offsetY
@@ -126,9 +205,21 @@ local function CreateTrackerFrame()
     return frame
 end
 
+-- Recreate tracker frame with new settings
+function RecreateTrackerFrame()
+    if trackerFrame then
+        trackerFrame:Hide()
+        trackerFrame:SetParent(nil)
+        trackerFrame = nil
+    end
+    
+    trackerFrame = CreateTrackerFrame()
+    UpdateButtons()
+end
+
 -- Update buttons to mirror action bar slots
 local updateThrottle = 0
-local function UpdateButtons(forceUpdate)
+function UpdateButtons(forceUpdate)
     if not trackerFrame then return end
     
     -- Only throttle timer-based updates, not event-driven ones
@@ -142,7 +233,7 @@ local function UpdateButtons(forceUpdate)
     
     for i = 1, MAX_BUTTONS do
         local button = trackerFrame.buttons[i]
-        local actionSlot = JarsMouseActionBarsCharDB.actionSlots[i]
+        local actionSlot = activeProfile.actionSlots[i]
         
         if actionSlot and actionSlot > 0 then
             local hasAction = HasAction(actionSlot)
@@ -257,82 +348,109 @@ local function CreateConfigFrame()
     frame.title:SetPoint("TOP", 0, -5)
     frame.title:SetText("Jar's Mouse Action Bars Configuration")
     
+    -- Profile indicator
+    frame.profileLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    frame.profileLabel:SetPoint("TOP", 0, -22)
+    frame.profileLabel:SetTextColor(0.7, 0.7, 0.7)
+    
+    -- Update profile label text
+    local function UpdateProfileLabel()
+        local specIndex = GetSpecialization()
+        if specIndex then
+            local _, specName = GetSpecializationInfo(specIndex)
+            local talentText = ""
+            if C_ClassTalents and C_ClassTalents.GetActiveConfigID then
+                local configID = C_ClassTalents.GetActiveConfigID()
+                if configID then
+                    talentText = " (Loadout " .. configID .. ")"
+                end
+            end
+            frame.profileLabel:SetText("Profile: " .. (specName or "Unknown") .. talentText)
+        else
+            frame.profileLabel:SetText("Profile: Default")
+        end
+    end
+    UpdateProfileLabel()
+    
+    -- Update profile label when frame is shown
+    frame:HookScript("OnShow", UpdateProfileLabel)
+    
     -- Icon Size slider
     local sizeLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     sizeLabel:SetPoint("TOPLEFT", 20, -35)
-    sizeLabel:SetText("Icon Size: " .. (JarsMouseActionBarsDB.iconSize or 36))
+    sizeLabel:SetText("Icon Size: " .. (JarsMouseActionBarsDB.global.iconSize or 36))
     
     local sizeSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
     sizeSlider:SetPoint("TOPLEFT", 20, -55)
     sizeSlider:SetMinMaxValues(20, 64)
-    sizeSlider:SetValue(JarsMouseActionBarsDB.iconSize or 36)
+    sizeSlider:SetValue(JarsMouseActionBarsDB.global.iconSize or 36)
     sizeSlider:SetValueStep(2)
     sizeSlider:SetObeyStepOnDrag(true)
     sizeSlider:SetWidth(150)
     sizeSlider.Low:SetText("20")
     sizeSlider.High:SetText("64")
     sizeSlider:SetScript("OnValueChanged", function(self, value)
-        JarsMouseActionBarsDB.iconSize = value
+        JarsMouseActionBarsDB.global.iconSize = value
         sizeLabel:SetText("Icon Size: " .. math.floor(value))
-        print("|cff00ff00Jar's Mouse Action Bars|r Icon size changed. /reload to apply.")
+        RecreateTrackerFrame()
     end)
     
     -- Cursor Offset X slider
     local offsetXLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     offsetXLabel:SetPoint("TOPLEFT", 220, -35)
-    offsetXLabel:SetText("Cursor Offset X: " .. (JarsMouseActionBarsDB.cursorOffsetX or 5))
+    offsetXLabel:SetText("Cursor Offset X: " .. (JarsMouseActionBarsDB.global.cursorOffsetX or 5))
     
     local offsetXSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
     offsetXSlider:SetPoint("TOPLEFT", 220, -55)
     offsetXSlider:SetMinMaxValues(-200, 200)
-    offsetXSlider:SetValue(JarsMouseActionBarsDB.cursorOffsetX or 5)
+    offsetXSlider:SetValue(JarsMouseActionBarsDB.global.cursorOffsetX or 5)
     offsetXSlider:SetValueStep(1)
     offsetXSlider:SetObeyStepOnDrag(true)
     offsetXSlider:SetWidth(200)
     offsetXSlider.Low:SetText("-200")
     offsetXSlider.High:SetText("200")
     offsetXSlider:SetScript("OnValueChanged", function(self, value)
-        JarsMouseActionBarsDB.cursorOffsetX = value
+        JarsMouseActionBarsDB.global.cursorOffsetX = value
         offsetXLabel:SetText("Cursor Offset X: " .. math.floor(value))
     end)
     
     -- Cursor Offset Y slider
     local offsetYLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     offsetYLabel:SetPoint("TOPLEFT", 20, -100)
-    offsetYLabel:SetText("Cursor Offset Y: " .. (JarsMouseActionBarsDB.cursorOffsetY or 5))
+    offsetYLabel:SetText("Cursor Offset Y: " .. (JarsMouseActionBarsDB.global.cursorOffsetY or 5))
     
     local offsetYSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
     offsetYSlider:SetPoint("TOPLEFT", 20, -120)
     offsetYSlider:SetMinMaxValues(-200, 200)
-    offsetYSlider:SetValue(JarsMouseActionBarsDB.cursorOffsetY or 5)
+    offsetYSlider:SetValue(JarsMouseActionBarsDB.global.cursorOffsetY or 5)
     offsetYSlider:SetValueStep(1)
     offsetYSlider:SetObeyStepOnDrag(true)
     offsetYSlider:SetWidth(150)
     offsetYSlider.Low:SetText("-200")
     offsetYSlider.High:SetText("200")
     offsetYSlider:SetScript("OnValueChanged", function(self, value)
-        JarsMouseActionBarsDB.cursorOffsetY = value
+        JarsMouseActionBarsDB.global.cursorOffsetY = value
         offsetYLabel:SetText("Cursor Offset Y: " .. math.floor(value))
     end)
     
     -- Buttons Per Row slider
     local rowLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     rowLabel:SetPoint("TOPLEFT", 220, -100)
-    rowLabel:SetText("Buttons Per Row: " .. (JarsMouseActionBarsDB.buttonsPerRow or 6))
+    rowLabel:SetText("Buttons Per Row: " .. (JarsMouseActionBarsDB.global.buttonsPerRow or 6))
     
     local rowSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
     rowSlider:SetPoint("TOPLEFT", 220, -120)
     rowSlider:SetMinMaxValues(3, 12)
-    rowSlider:SetValue(JarsMouseActionBarsDB.buttonsPerRow or 6)
+    rowSlider:SetValue(JarsMouseActionBarsDB.global.buttonsPerRow or 6)
     rowSlider:SetValueStep(1)
     rowSlider:SetObeyStepOnDrag(true)
     rowSlider:SetWidth(200)
     rowSlider.Low:SetText("3")
     rowSlider.High:SetText("12")
     rowSlider:SetScript("OnValueChanged", function(self, value)
-        JarsMouseActionBarsDB.buttonsPerRow = value
+        JarsMouseActionBarsDB.global.buttonsPerRow = value
         rowLabel:SetText("Buttons Per Row: " .. math.floor(value))
-        print("|cff00ff00Jar's Mouse Action Bars|r Layout changed. /reload to apply.")
+        RecreateTrackerFrame()
     end)
     
     -- Action Button Slots Section
@@ -362,18 +480,18 @@ local function CreateConfigFrame()
         box:SetNumeric(true)
         box:SetMaxLetters(3)
         
-        local slotNum = JarsMouseActionBarsCharDB.actionSlots[i] or 0
+        local slotNum = activeProfile.actionSlots[i] or 0
         box:SetText(slotNum > 0 and tostring(slotNum) or "")
         
         box:SetScript("OnEnterPressed", function(self)
             local value = tonumber(self:GetText()) or 0
             if value > 120 then value = 120 end
-            JarsMouseActionBarsCharDB.actionSlots[i] = value
+            activeProfile.actionSlots[i] = value
             self:ClearFocus()
             UpdateButtons()
         end)
         box:SetScript("OnEscapePressed", function(self)
-            self:SetText(JarsMouseActionBarsCharDB.actionSlots[i] or "")
+            self:SetText(activeProfile.actionSlots[i] or "")
             self:ClearFocus()
         end)
         
@@ -389,7 +507,7 @@ local function CreateConfigFrame()
         for i = 1, MAX_BUTTONS do
             local value = tonumber(inputBoxes[i]:GetText()) or 0
             if value > 120 then value = 120 end
-            JarsMouseActionBarsCharDB.actionSlots[i] = value
+            activeProfile.actionSlots[i] = value
         end
         UpdateButtons()
         print("|cff00ff00Jar's Mouse Action Bars|r Configuration saved")
@@ -403,7 +521,7 @@ local function CreateConfigFrame()
     clearBtn:SetScript("OnClick", function()
         for i = 1, MAX_BUTTONS do
             inputBoxes[i]:SetText("")
-            JarsMouseActionBarsCharDB.actionSlots[i] = 0
+            activeProfile.actionSlots[i] = 0
         end
         UpdateButtons()
     end)
@@ -417,11 +535,19 @@ local function CreateConfigFrame()
         local defaults = {1, 2, 3, 4, 5, 6, 13, 14, 15, 16, 17, 18}
         for i = 1, MAX_BUTTONS do
             inputBoxes[i]:SetText(tostring(defaults[i]))
-            JarsMouseActionBarsCharDB.actionSlots[i] = defaults[i]
+            activeProfile.actionSlots[i] = defaults[i]
         end
         UpdateButtons()
         print("|cff00ff00Jar's Mouse Action Bars|r Loaded default slots")
     end)
+    
+    -- Add Reload method to refresh UI with current profile data
+    frame.Reload = function()
+        for i = 1, MAX_BUTTONS do
+            local slotNum = activeProfile.actionSlots[i] or 0
+            inputBoxes[i]:SetText(slotNum > 0 and tostring(slotNum) or "")
+        end
+    end
     
     return frame
 end
@@ -443,14 +569,24 @@ eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
 eventFrame:RegisterEvent("UNIT_AURA")
 eventFrame:RegisterEvent("PLAYER_ENTER_COMBAT")
 eventFrame:RegisterEvent("PLAYER_LEAVE_COMBAT")
+eventFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+eventFrame:RegisterEvent("TRAIT_CONFIG_UPDATED")
+eventFrame:RegisterEvent("TRAIT_CONFIG_LIST_UPDATED")
+eventFrame:RegisterEvent("CONFIG_COMMIT_FAILED")
+eventFrame:RegisterEvent("PLAYER_TALENT_UPDATE")
+eventFrame:RegisterEvent("ACTIVE_TALENT_GROUP_CHANGED")
 
 eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" then
         local addonName = ...
         if addonName == "JarsMouseActionBars" then
-            InitDB()
+            -- Profile system doesn't need InitDB anymore
         end
     elseif event == "PLAYER_LOGIN" then
+        -- Initialize saved variables
+        InitializeGlobalSettings()
+        LoadProfile()
+        
         print("|cff00ff00Jar's Mouse Action Bars|r loaded. Type /jmab for options.")
         
         -- Create frames
@@ -459,6 +595,14 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         
         -- Initial update
         C_Timer.After(1, UpdateButtons)
+    
+    elseif event == "PLAYER_SPECIALIZATION_CHANGED" or event == "TRAIT_CONFIG_UPDATED" or event == "TRAIT_CONFIG_LIST_UPDATED" or event == "CONFIG_COMMIT_FAILED" or event == "PLAYER_TALENT_UPDATE" or event == "ACTIVE_TALENT_GROUP_CHANGED" then
+        -- Load the appropriate profile for the new spec/talent configuration
+        local newProfileKey = GetCurrentProfileKey()
+        if newProfileKey ~= currentProfile then
+            print(string.format("|cff00ff00Jar's Mouse Action Bars|r Switching profile: %s -> %s (Event: %s)", currentProfile or "none", newProfileKey, event))
+            LoadProfile(newProfileKey)
+        end
         
     elseif event == "ACTIONBAR_SLOT_CHANGED" or 
            event == "SPELL_UPDATE_COOLDOWN" or
@@ -477,12 +621,12 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         if trackerFrame and spellID then
             for i = 1, MAX_BUTTONS do
                 local button = trackerFrame.buttons[i]
-                local actionSlot = JarsMouseActionBarsCharDB.actionSlots[i]
+                local actionSlot = activeProfile.actionSlots[i]
                 if actionSlot and HasAction(actionSlot) then
                     local actionType, id = GetActionInfo(actionSlot)
                     if actionType == "spell" and id == spellID then
-                        if button.overlay and ActionButton_ShowOverlayGlow then
-                            ActionButton_ShowOverlayGlow(button)
+                        if button.overlay then
+                            button.overlay:Show()
                         end
                     end
                 end
@@ -493,12 +637,12 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         if trackerFrame and spellID then
             for i = 1, MAX_BUTTONS do
                 local button = trackerFrame.buttons[i]
-                local actionSlot = JarsMouseActionBarsCharDB.actionSlots[i]
+                local actionSlot = activeProfile.actionSlots[i]
                 if actionSlot and HasAction(actionSlot) then
                     local actionType, id = GetActionInfo(actionSlot)
                     if actionType == "spell" and id == spellID then
-                        if button.overlay and ActionButton_HideOverlayGlow then
-                            ActionButton_HideOverlayGlow(button)
+                        if button.overlay then
+                            button.overlay:Hide()
                         end
                     end
                 end
@@ -544,10 +688,30 @@ SlashCmdList["JARSMOUSEACTIONBARS"] = function(msg)
             end
         end
         print("|cff00ff00Scan complete!|r")
+    elseif msg == "profile" or msg == "debug" then
+        local profileKey = GetCurrentProfileKey()
+        local specIndex = GetSpecialization()
+        local specID, specName = GetSpecializationInfo(specIndex or 0)
+        local configID = C_ClassTalents and C_ClassTalents.GetActiveConfigID and C_ClassTalents.GetActiveConfigID() or "nil"
+        
+        print("|cff00ff00Jar's Mouse Action Bars|r Profile Debug:")
+        print("  Current Profile Key: " .. (currentProfile or "none"))
+        print("  Calculated Profile Key: " .. profileKey)
+        print("  Spec Index: " .. (specIndex or "nil"))
+        print("  Spec ID: " .. (specID or "nil"))
+        print("  Spec Name: " .. (specName or "nil"))
+        print("  Talent Config ID: " .. tostring(configID))
+        if JarsMouseActionBarsDB.profiles then
+            print("  Available Profiles:")
+            for key, _ in pairs(JarsMouseActionBarsDB.profiles) do
+                print("    - " .. key .. (key == currentProfile and " (active)" or ""))
+            end
+        end
     else
         print("|cff00ff00Jar's Mouse Action Bars|r Commands:")
         print("  /jmab - Open configuration window")
         print("  /jmab config - Open configuration window")
         print("  /jmab scan - Scan all slots to find your actions")
+        print("  /jmab profile - Show current profile information")
     end
 end

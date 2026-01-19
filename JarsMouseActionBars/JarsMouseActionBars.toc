@@ -3,7 +3,6 @@
 ## Notes: Mirrors action bar buttons next to mouse cursor
 ## Author: Jar
 ## Version: 1.0
-## SavedVariables: JarsMouseActionBarsDB
-## SavedVariablesPerCharacter: JarsMouseActionBarsCharDB
+## SavedVariablesPerCharacter: JarsMouseActionBarsDB
 
 JarsMouseActionBars.lua
