@@ -56,9 +56,9 @@ end
 local function InitializeGlobalSettings()
     if not JarsMouseActionBarsDB.global then
         JarsMouseActionBarsDB.global = {
-            iconSize = 36,
-            cursorOffsetX = 5,
-            cursorOffsetY = 5,
+            iconSize = 20,
+            cursorOffsetX = 40,
+            cursorOffsetY = -30,
             buttonsPerRow = 6,
         }
     end
@@ -111,7 +111,7 @@ local UpdateButtons  -- Forward declaration
 local function CreateTrackerFrame()
     local frame = CreateFrame("Frame", "JMAB_Tracker", UIParent)
     
-    local iconSize = JarsMouseActionBarsDB.global.iconSize or 36
+    local iconSize = JarsMouseActionBarsDB.global.iconSize or 20
     local spacing = 2
     local buttonsPerRow = JarsMouseActionBarsDB.global.buttonsPerRow or 6
     local rows = math.ceil(MAX_BUTTONS / buttonsPerRow)
@@ -378,12 +378,12 @@ local function CreateConfigFrame()
     -- Icon Size slider
     local sizeLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     sizeLabel:SetPoint("TOPLEFT", 20, -35)
-    sizeLabel:SetText("Icon Size: " .. (JarsMouseActionBarsDB.global.iconSize or 36))
+    sizeLabel:SetText("Icon Size: " .. (JarsMouseActionBarsDB.global.iconSize or 20))
     
     local sizeSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
     sizeSlider:SetPoint("TOPLEFT", 20, -55)
     sizeSlider:SetMinMaxValues(20, 64)
-    sizeSlider:SetValue(JarsMouseActionBarsDB.global.iconSize or 36)
+    sizeSlider:SetValue(JarsMouseActionBarsDB.global.iconSize or 20)
     sizeSlider:SetValueStep(2)
     sizeSlider:SetObeyStepOnDrag(true)
     sizeSlider:SetWidth(150)
