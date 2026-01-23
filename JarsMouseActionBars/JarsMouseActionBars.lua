@@ -28,8 +28,32 @@ local function GetCurrentProfileKey()
         end
     end
     
-    -- Format: spec123_talent456
-    return "spec" .. specID .. "_talent" .. talentLoadoutID
+    -- Generate a hash of selected talents to differentiate between builds
+    local talentHash = ""
+    if C_Traits and C_Traits.GetConfigInfo then
+        local configInfo = C_Traits.GetConfigInfo(C_ClassTalents.GetActiveConfigID())
+        if configInfo and configInfo.treeIDs then
+            -- Get selected nodes for all trees in this config
+            local selectedNodes = {}
+            for _, treeID in ipairs(configInfo.treeIDs) do
+                local nodes = C_Traits.GetTreeNodes(treeID)
+                if nodes then
+                    for _, nodeID in ipairs(nodes) do
+                        local nodeInfo = C_Traits.GetNodeInfo(configInfo.ID, nodeID)
+                        if nodeInfo and nodeInfo.activeEntry and nodeInfo.activeEntry.entryID then
+                            table.insert(selectedNodes, nodeInfo.activeEntry.entryID)
+                        end
+                    end
+                end
+            end
+            -- Sort and create hash
+            table.sort(selectedNodes)
+            talentHash = "_" .. table.concat(selectedNodes, "-")
+        end
+    end
+    
+    -- Format: spec123_talent456_hash
+    return "spec" .. specID .. "_talent" .. talentLoadoutID .. talentHash
 end
 
 -- Get or create profile data
@@ -45,23 +69,30 @@ local function GetProfile(profileKey)
             actionSlots = {
                 1, 2, 3, 4, 5, 6,  -- Default: First 6 slots of action bar 1
                 61, 62, 63, 64, 65, 66  -- Default: First 6 slots of action bar 6
-            }
-        }
-    end
-    
-    return JarsMouseActionBarsDB.profiles[profileKey]
-end
-
--- Initialize global settings (shared across all profiles)
-local function InitializeGlobalSettings()
-    if not JarsMouseActionBarsDB.global then
-        JarsMouseActionBarsDB.global = {
+            },
+            -- Per-profile settings
             iconSize = 20,
             cursorOffsetX = 40,
             cursorOffsetY = -30,
             buttonsPerRow = 6,
         }
+    else
+        -- Migrate old profiles that don't have these settings
+        if not JarsMouseActionBarsDB.profiles[profileKey].iconSize then
+            JarsMouseActionBarsDB.profiles[profileKey].iconSize = 20
+        end
+        if not JarsMouseActionBarsDB.profiles[profileKey].cursorOffsetX then
+            JarsMouseActionBarsDB.profiles[profileKey].cursorOffsetX = 40
+        end
+        if not JarsMouseActionBarsDB.profiles[profileKey].cursorOffsetY then
+            JarsMouseActionBarsDB.profiles[profileKey].cursorOffsetY = -30
+        end
+        if not JarsMouseActionBarsDB.profiles[profileKey].buttonsPerRow then
+            JarsMouseActionBarsDB.profiles[profileKey].buttonsPerRow = 6
+        end
     end
+    
+    return JarsMouseActionBarsDB.profiles[profileKey]
 end
 
 -- Switch to a different profile
@@ -69,9 +100,11 @@ local function LoadProfile(profileKey)
     currentProfile = profileKey or GetCurrentProfileKey()
     activeProfile = GetProfile(currentProfile)
     
-    -- Update tracker if it exists
+    print("|cff00ff00Jar's Mouse Action Bars|r Loaded profile: " .. currentProfile)
+    
+    -- Recreate tracker frame to apply new size/layout settings
     if trackerFrame then
-        UpdateButtons()
+        RecreateTrackerFrame()
     end
     
     -- Update config frame if it exists and is visible
@@ -111,9 +144,9 @@ local UpdateButtons  -- Forward declaration
 local function CreateTrackerFrame()
     local frame = CreateFrame("Frame", "JMAB_Tracker", UIParent)
     
-    local iconSize = JarsMouseActionBarsDB.global.iconSize or 20
+    local iconSize = activeProfile.iconSize or 20
     local spacing = 2
-    local buttonsPerRow = JarsMouseActionBarsDB.global.buttonsPerRow or 6
+    local buttonsPerRow = activeProfile.buttonsPerRow or 6
     local rows = math.ceil(MAX_BUTTONS / buttonsPerRow)
     
     local frameWidth = iconSize * buttonsPerRow + spacing * (buttonsPerRow - 1)
@@ -187,8 +220,8 @@ local function CreateTrackerFrame()
     frame:SetScript("OnUpdate", function(self, elapsed)
         local x, y = GetCursorPosition()
         local scale = UIParent:GetEffectiveScale()
-        local offsetX = JarsMouseActionBarsDB.global.cursorOffsetX or 5
-        local offsetY = JarsMouseActionBarsDB.global.cursorOffsetY or 5
+        local offsetX = activeProfile.cursorOffsetX or 5
+        local offsetY = activeProfile.cursorOffsetY or 5
         
         local newX = (x / scale) + offsetX
         local newY = (y / scale) + offsetY
@@ -378,19 +411,19 @@ local function CreateConfigFrame()
     -- Icon Size slider
     local sizeLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     sizeLabel:SetPoint("TOPLEFT", 20, -35)
-    sizeLabel:SetText("Icon Size: " .. (JarsMouseActionBarsDB.global.iconSize or 20))
+    sizeLabel:SetText("Icon Size: " .. (activeProfile.iconSize or 20))
     
     local sizeSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
     sizeSlider:SetPoint("TOPLEFT", 20, -55)
     sizeSlider:SetMinMaxValues(20, 64)
-    sizeSlider:SetValue(JarsMouseActionBarsDB.global.iconSize or 20)
+    sizeSlider:SetValue(activeProfile.iconSize or 20)
     sizeSlider:SetValueStep(2)
     sizeSlider:SetObeyStepOnDrag(true)
     sizeSlider:SetWidth(150)
     sizeSlider.Low:SetText("20")
     sizeSlider.High:SetText("64")
     sizeSlider:SetScript("OnValueChanged", function(self, value)
-        JarsMouseActionBarsDB.global.iconSize = value
+        activeProfile.iconSize = value
         sizeLabel:SetText("Icon Size: " .. math.floor(value))
         RecreateTrackerFrame()
     end)
@@ -398,57 +431,57 @@ local function CreateConfigFrame()
     -- Cursor Offset X slider
     local offsetXLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     offsetXLabel:SetPoint("TOPLEFT", 220, -35)
-    offsetXLabel:SetText("Cursor Offset X: " .. (JarsMouseActionBarsDB.global.cursorOffsetX or 5))
+    offsetXLabel:SetText("Cursor Offset X: " .. (activeProfile.cursorOffsetX or 5))
     
     local offsetXSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
     offsetXSlider:SetPoint("TOPLEFT", 220, -55)
     offsetXSlider:SetMinMaxValues(-200, 200)
-    offsetXSlider:SetValue(JarsMouseActionBarsDB.global.cursorOffsetX or 5)
+    offsetXSlider:SetValue(activeProfile.cursorOffsetX or 5)
     offsetXSlider:SetValueStep(1)
     offsetXSlider:SetObeyStepOnDrag(true)
     offsetXSlider:SetWidth(200)
     offsetXSlider.Low:SetText("-200")
     offsetXSlider.High:SetText("200")
     offsetXSlider:SetScript("OnValueChanged", function(self, value)
-        JarsMouseActionBarsDB.global.cursorOffsetX = value
+        activeProfile.cursorOffsetX = value
         offsetXLabel:SetText("Cursor Offset X: " .. math.floor(value))
     end)
     
     -- Cursor Offset Y slider
     local offsetYLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     offsetYLabel:SetPoint("TOPLEFT", 20, -100)
-    offsetYLabel:SetText("Cursor Offset Y: " .. (JarsMouseActionBarsDB.global.cursorOffsetY or 5))
+    offsetYLabel:SetText("Cursor Offset Y: " .. (activeProfile.cursorOffsetY or 5))
     
     local offsetYSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
     offsetYSlider:SetPoint("TOPLEFT", 20, -120)
     offsetYSlider:SetMinMaxValues(-200, 200)
-    offsetYSlider:SetValue(JarsMouseActionBarsDB.global.cursorOffsetY or 5)
+    offsetYSlider:SetValue(activeProfile.cursorOffsetY or 5)
     offsetYSlider:SetValueStep(1)
     offsetYSlider:SetObeyStepOnDrag(true)
     offsetYSlider:SetWidth(150)
     offsetYSlider.Low:SetText("-200")
     offsetYSlider.High:SetText("200")
     offsetYSlider:SetScript("OnValueChanged", function(self, value)
-        JarsMouseActionBarsDB.global.cursorOffsetY = value
+        activeProfile.cursorOffsetY = value
         offsetYLabel:SetText("Cursor Offset Y: " .. math.floor(value))
     end)
     
     -- Buttons Per Row slider
     local rowLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     rowLabel:SetPoint("TOPLEFT", 220, -100)
-    rowLabel:SetText("Buttons Per Row: " .. (JarsMouseActionBarsDB.global.buttonsPerRow or 6))
+    rowLabel:SetText("Buttons Per Row: " .. (activeProfile.buttonsPerRow or 6))
     
     local rowSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
     rowSlider:SetPoint("TOPLEFT", 220, -120)
     rowSlider:SetMinMaxValues(3, 12)
-    rowSlider:SetValue(JarsMouseActionBarsDB.global.buttonsPerRow or 6)
+    rowSlider:SetValue(activeProfile.buttonsPerRow or 6)
     rowSlider:SetValueStep(1)
     rowSlider:SetObeyStepOnDrag(true)
     rowSlider:SetWidth(200)
     rowSlider.Low:SetText("3")
     rowSlider.High:SetText("12")
     rowSlider:SetScript("OnValueChanged", function(self, value)
-        JarsMouseActionBarsDB.global.buttonsPerRow = value
+        activeProfile.buttonsPerRow = value
         rowLabel:SetText("Buttons Per Row: " .. math.floor(value))
         RecreateTrackerFrame()
     end)
@@ -480,18 +513,21 @@ local function CreateConfigFrame()
         box:SetNumeric(true)
         box:SetMaxLetters(3)
         
+        -- Store the slot index on the box itself
+        box.slotIndex = i
+        
         local slotNum = activeProfile.actionSlots[i] or 0
         box:SetText(slotNum > 0 and tostring(slotNum) or "")
         
         box:SetScript("OnEnterPressed", function(self)
             local value = tonumber(self:GetText()) or 0
             if value > 120 then value = 120 end
-            activeProfile.actionSlots[i] = value
+            activeProfile.actionSlots[self.slotIndex] = value
             self:ClearFocus()
-            UpdateButtons()
+            UpdateButtons(true)
         end)
         box:SetScript("OnEscapePressed", function(self)
-            self:SetText(activeProfile.actionSlots[i] or "")
+            self:SetText(activeProfile.actionSlots[self.slotIndex] or "")
             self:ClearFocus()
         end)
         
@@ -509,8 +545,8 @@ local function CreateConfigFrame()
             if value > 120 then value = 120 end
             activeProfile.actionSlots[i] = value
         end
-        UpdateButtons()
-        print("|cff00ff00Jar's Mouse Action Bars|r Configuration saved")
+        UpdateButtons(true)
+        print("|cff00ff00Jar's Mouse Action Bars|r Configuration saved to profile: " .. currentProfile)
     end)
     
     -- Clear button
@@ -543,10 +579,24 @@ local function CreateConfigFrame()
     
     -- Add Reload method to refresh UI with current profile data
     frame.Reload = function()
+        -- Update action slot inputs
         for i = 1, MAX_BUTTONS do
             local slotNum = activeProfile.actionSlots[i] or 0
             inputBoxes[i]:SetText(slotNum > 0 and tostring(slotNum) or "")
         end
+        
+        -- Update sliders to reflect current profile settings
+        sizeSlider:SetValue(activeProfile.iconSize or 20)
+        sizeLabel:SetText("Icon Size: " .. (activeProfile.iconSize or 20))
+        
+        offsetXSlider:SetValue(activeProfile.cursorOffsetX or 40)
+        offsetXLabel:SetText("Cursor Offset X: " .. (activeProfile.cursorOffsetX or 40))
+        
+        offsetYSlider:SetValue(activeProfile.cursorOffsetY or -30)
+        offsetYLabel:SetText("Cursor Offset Y: " .. (activeProfile.cursorOffsetY or -30))
+        
+        rowSlider:SetValue(activeProfile.buttonsPerRow or 6)
+        rowLabel:SetText("Buttons Per Row: " .. (activeProfile.buttonsPerRow or 6))
     end
     
     return frame
@@ -584,7 +634,6 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         end
     elseif event == "PLAYER_LOGIN" then
         -- Initialize saved variables
-        InitializeGlobalSettings()
         LoadProfile()
         
         print("|cff00ff00Jar's Mouse Action Bars|r loaded. Type /jmab for options.")
