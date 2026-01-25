@@ -30,25 +30,28 @@ local function GetCurrentProfileKey()
     
     -- Generate a hash of selected talents to differentiate between builds
     local talentHash = ""
-    if C_Traits and C_Traits.GetConfigInfo then
-        local configInfo = C_Traits.GetConfigInfo(C_ClassTalents.GetActiveConfigID())
-        if configInfo and configInfo.treeIDs then
-            -- Get selected nodes for all trees in this config
-            local selectedNodes = {}
-            for _, treeID in ipairs(configInfo.treeIDs) do
-                local nodes = C_Traits.GetTreeNodes(treeID)
-                if nodes then
-                    for _, nodeID in ipairs(nodes) do
-                        local nodeInfo = C_Traits.GetNodeInfo(configInfo.ID, nodeID)
-                        if nodeInfo and nodeInfo.activeEntry and nodeInfo.activeEntry.entryID then
-                            table.insert(selectedNodes, nodeInfo.activeEntry.entryID)
+    if C_Traits and C_Traits.GetConfigInfo and C_ClassTalents and C_ClassTalents.GetActiveConfigID then
+        local configID = C_ClassTalents.GetActiveConfigID()
+        if configID then
+            local configInfo = C_Traits.GetConfigInfo(configID)
+            if configInfo and configInfo.treeIDs then
+                -- Get selected nodes for all trees in this config
+                local selectedNodes = {}
+                for _, treeID in ipairs(configInfo.treeIDs) do
+                    local nodes = C_Traits.GetTreeNodes(treeID)
+                    if nodes then
+                        for _, nodeID in ipairs(nodes) do
+                            local nodeInfo = C_Traits.GetNodeInfo(configInfo.ID, nodeID)
+                            if nodeInfo and nodeInfo.activeEntry and nodeInfo.activeEntry.entryID then
+                                table.insert(selectedNodes, nodeInfo.activeEntry.entryID)
+                            end
                         end
                     end
                 end
+                -- Sort and create hash
+                table.sort(selectedNodes)
+                talentHash = "_" .. table.concat(selectedNodes, "-")
             end
-            -- Sort and create hash
-            table.sort(selectedNodes)
-            talentHash = "_" .. table.concat(selectedNodes, "-")
         end
     end
     
