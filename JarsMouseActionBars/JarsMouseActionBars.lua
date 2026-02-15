@@ -98,6 +98,12 @@ local function GetProfile(profileKey)
     return JarsMouseActionBarsDB.profiles[profileKey]
 end
 
+-- Forward declarations
+local trackerFrame
+local configFrame
+local RecreateTrackerFrame
+local UpdateButtons
+
 -- Switch to a different profile
 local function LoadProfile(profileKey)
     currentProfile = profileKey or GetCurrentProfileKey()
@@ -136,12 +142,6 @@ local function LoadProfile(profileKey)
         end
     end
 end
-
--- Forward declarations
-local trackerFrame
-local configFrame
-local RecreateTrackerFrame  -- Forward declaration
-local UpdateButtons  -- Forward declaration
 
 -- Create tracker frame with action button mirrors
 local function CreateTrackerFrame()
