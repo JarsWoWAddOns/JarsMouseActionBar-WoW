@@ -3,100 +3,14 @@
 
 -- Configuration
 local MAX_BUTTONS = 12  -- Default number of buttons to show
+local MAX_LAYOUTS = 100
 
 -- Saved variables (per-character)
 JarsMouseActionBarsDB = JarsMouseActionBarsDB or {}
 
--- Profile management
-local currentProfile = "default"
-local activeProfile = {}
-
--- Get current spec and talent loadout for profile naming
-local function GetCurrentProfileKey()
-    local specIndex = GetSpecialization()
-    if not specIndex then return "default" end
-    
-    local specID = GetSpecializationInfo(specIndex)
-    if not specID then return "default" end
-    
-    -- Try to get active talent loadout if API exists
-    local talentLoadoutID = "base"
-    if C_ClassTalents and C_ClassTalents.GetActiveConfigID then
-        local configID = C_ClassTalents.GetActiveConfigID()
-        if configID then
-            talentLoadoutID = tostring(configID)
-        end
-    end
-    
-    -- Generate a hash of selected talents to differentiate between builds
-    local talentHash = ""
-    if C_Traits and C_Traits.GetConfigInfo and C_ClassTalents and C_ClassTalents.GetActiveConfigID then
-        local configID = C_ClassTalents.GetActiveConfigID()
-        if configID then
-            local configInfo = C_Traits.GetConfigInfo(configID)
-            if configInfo and configInfo.treeIDs then
-                -- Get selected nodes for all trees in this config
-                local selectedNodes = {}
-                for _, treeID in ipairs(configInfo.treeIDs) do
-                    local nodes = C_Traits.GetTreeNodes(treeID)
-                    if nodes then
-                        for _, nodeID in ipairs(nodes) do
-                            local nodeInfo = C_Traits.GetNodeInfo(configInfo.ID, nodeID)
-                            if nodeInfo and nodeInfo.activeEntry and nodeInfo.activeEntry.entryID then
-                                table.insert(selectedNodes, nodeInfo.activeEntry.entryID)
-                            end
-                        end
-                    end
-                end
-                -- Sort and create hash
-                table.sort(selectedNodes)
-                talentHash = "_" .. table.concat(selectedNodes, "-")
-            end
-        end
-    end
-    
-    -- Format: spec123_talent456_hash
-    return "spec" .. specID .. "_talent" .. talentLoadoutID .. talentHash
-end
-
--- Get or create profile data
-local function GetProfile(profileKey)
-    profileKey = profileKey or currentProfile
-    
-    if not JarsMouseActionBarsDB.profiles then
-        JarsMouseActionBarsDB.profiles = {}
-    end
-    
-    if not JarsMouseActionBarsDB.profiles[profileKey] then
-        JarsMouseActionBarsDB.profiles[profileKey] = {
-            actionSlots = {
-                1, 2, 3, 4, 5, 6,  -- Default: First 6 slots of action bar 1
-                61, 62, 63, 64, 65, 66  -- Default: First 6 slots of action bar 6
-            },
-            -- Per-profile settings
-            iconSize = 20,
-            cursorOffsetX = 40,
-            cursorOffsetY = -30,
-            buttonsPerRow = 6,
-        }
-    else
-        -- Migrate old profiles that don't have these settings
-        if not JarsMouseActionBarsDB.profiles[profileKey].iconSize then
-            JarsMouseActionBarsDB.profiles[profileKey].iconSize = 20
-        end
-        if not JarsMouseActionBarsDB.profiles[profileKey].cursorOffsetX then
-            JarsMouseActionBarsDB.profiles[profileKey].cursorOffsetX = 40
-        end
-        if not JarsMouseActionBarsDB.profiles[profileKey].cursorOffsetY then
-            JarsMouseActionBarsDB.profiles[profileKey].cursorOffsetY = -30
-        end
-        if not JarsMouseActionBarsDB.profiles[profileKey].buttonsPerRow then
-            JarsMouseActionBarsDB.profiles[profileKey].buttonsPerRow = 6
-        end
-    end
-    
-    return JarsMouseActionBarsDB.profiles[profileKey]
-end
+-- Active layout state
+local currentLayoutName = nil  -- Name of the currently loaded layout (nil = empty/no layout)
+local activeProfile = {}       -- The actual layout data being used
 
 -- Forward declarations
 local trackerFrame
@@ -104,105 +18,236 @@ local configFrame
 local RecreateTrackerFrame
 local UpdateButtons
 
--- Switch to a different profile
-local function LoadProfile(profileKey)
-    currentProfile = profileKey or GetCurrentProfileKey()
-    activeProfile = GetProfile(currentProfile)
-    
-    print("|cff00ff00Jar's Mouse Action Bars|r Loaded profile: " .. currentProfile)
-    
-    -- Recreate tracker frame to apply new size/layout settings
+-- Get current spec ID (simple helper, no talent hashing)
+local function GetCurrentSpecID()
+    local specIndex = GetSpecialization()
+    if not specIndex then return nil end
+    local specID = GetSpecializationInfo(specIndex)
+    return specID
+end
+
+-- Get current spec name for display
+local function GetCurrentSpecName()
+    local specIndex = GetSpecialization()
+    if not specIndex then return "Unknown" end
+    local _, specName = GetSpecializationInfo(specIndex)
+    return specName or "Unknown"
+end
+
+-- Initialize saved variables structure
+local function InitDB()
+    if not JarsMouseActionBarsDB.layouts then
+        JarsMouseActionBarsDB.layouts = {}
+    end
+    if not JarsMouseActionBarsDB.specAssociations then
+        JarsMouseActionBarsDB.specAssociations = {}
+    end
+end
+
+-- Create an empty layout (all slots cleared)
+local function CreateEmptyLayout()
+    local layout = {
+        actionSlots = {},
+        iconSize = 20,
+        cursorOffsetX = 40,
+        cursorOffsetY = -30,
+        buttonsPerRow = 6,
+    }
+    for i = 1, MAX_BUTTONS do
+        layout.actionSlots[i] = 0
+    end
+    return layout
+end
+
+-- Deep copy a layout table
+local function CopyLayout(src)
+    local copy = {
+        actionSlots = {},
+        iconSize = src.iconSize or 20,
+        cursorOffsetX = src.cursorOffsetX or 40,
+        cursorOffsetY = src.cursorOffsetY or -30,
+        buttonsPerRow = src.buttonsPerRow or 6,
+    }
+    for i = 1, MAX_BUTTONS do
+        copy.actionSlots[i] = src.actionSlots and src.actionSlots[i] or 0
+    end
+    return copy
+end
+
+-- Count total saved layouts
+local function CountLayouts()
+    local count = 0
+    for _ in pairs(JarsMouseActionBarsDB.layouts) do
+        count = count + 1
+    end
+    return count
+end
+
+-- Save current settings as a named layout and associate with current spec
+local function SaveLayout(name)
+    if not name or name == "" then
+        print("|cff00ff00Jar's Mouse Action Bars|r: Please enter a layout name.")
+        return false
+    end
+
+    -- Check limit (only for new layouts)
+    if not JarsMouseActionBarsDB.layouts[name] and CountLayouts() >= MAX_LAYOUTS then
+        print("|cff00ff00Jar's Mouse Action Bars|r: Cannot save. Maximum of " .. MAX_LAYOUTS .. " layouts reached.")
+        return false
+    end
+
+    -- Save the layout
+    JarsMouseActionBarsDB.layouts[name] = CopyLayout(activeProfile)
+    currentLayoutName = name
+
+    -- Associate with current spec
+    local specID = GetCurrentSpecID()
+    if specID then
+        JarsMouseActionBarsDB.specAssociations[specID] = name
+    end
+
+    print("|cff00ff00Jar's Mouse Action Bars|r: Layout '" .. name .. "' saved" ..
+        (specID and (" and associated with " .. GetCurrentSpecName()) or "") .. ".")
+    return true
+end
+
+-- Load a named layout and associate with current spec
+local function LoadLayout(name)
+    if not name or not JarsMouseActionBarsDB.layouts[name] then
+        print("|cff00ff00Jar's Mouse Action Bars|r: Layout '" .. (name or "nil") .. "' not found.")
+        return false
+    end
+
+    -- Load the layout data into activeProfile
+    activeProfile = CopyLayout(JarsMouseActionBarsDB.layouts[name])
+    currentLayoutName = name
+
+    -- Associate with current spec
+    local specID = GetCurrentSpecID()
+    if specID then
+        JarsMouseActionBarsDB.specAssociations[specID] = name
+    end
+
+    print("|cff00ff00Jar's Mouse Action Bars|r: Layout '" .. name .. "' loaded" ..
+        (specID and (" for " .. GetCurrentSpecName()) or "") .. ".")
+
+    -- Recreate tracker frame to apply new settings
     if trackerFrame then
         RecreateTrackerFrame()
     end
-    
-    -- Update config frame if it exists and is visible
-    if configFrame and configFrame:IsShown() then
-        -- Update profile label
-        if configFrame.profileLabel then
-            local specIndex = GetSpecialization()
-            if specIndex then
-                local _, specName = GetSpecializationInfo(specIndex)
-                local talentText = ""
-                if C_ClassTalents and C_ClassTalents.GetActiveConfigID then
-                    local configID = C_ClassTalents.GetActiveConfigID()
-                    if configID then
-                        talentText = " (Loadout " .. configID .. ")"
-                    end
-                end
-                configFrame.profileLabel:SetText("Profile: " .. (specName or "Unknown") .. talentText)
-            else
-                configFrame.profileLabel:SetText("Profile: Default")
-            end
-        end
-        
-        -- Reload the config UI to show new profile data
-        if configFrame.Reload then
-            configFrame:Reload()
+
+    -- Update config frame if visible
+    if configFrame and configFrame:IsShown() and configFrame.Reload then
+        configFrame:Reload()
+    end
+
+    return true
+end
+
+-- Load layout for the current spec based on saved association, or use empty
+local function LoadSpecLayout()
+    local specID = GetCurrentSpecID()
+    if specID then
+        local layoutName = JarsMouseActionBarsDB.specAssociations[specID]
+        if layoutName and JarsMouseActionBarsDB.layouts[layoutName] then
+            activeProfile = CopyLayout(JarsMouseActionBarsDB.layouts[layoutName])
+            currentLayoutName = layoutName
+            print("|cff00ff00Jar's Mouse Action Bars|r: Loaded layout '" .. layoutName .. "' for " .. GetCurrentSpecName() .. ".")
+            return
         end
     end
+
+    -- No association found - start with empty layout
+    activeProfile = CreateEmptyLayout()
+    currentLayoutName = nil
+    if specID then
+        print("|cff00ff00Jar's Mouse Action Bars|r: No layout set for " .. GetCurrentSpecName() .. ". Use /jmab to configure.")
+    end
+end
+
+-- Delete a named layout
+local function DeleteLayout(name)
+    if not name or not JarsMouseActionBarsDB.layouts[name] then
+        return false
+    end
+
+    JarsMouseActionBarsDB.layouts[name] = nil
+
+    -- Remove any spec associations pointing to this layout
+    for specID, layoutName in pairs(JarsMouseActionBarsDB.specAssociations) do
+        if layoutName == name then
+            JarsMouseActionBarsDB.specAssociations[specID] = nil
+        end
+    end
+
+    -- If we just deleted the active layout, clear the active name
+    if currentLayoutName == name then
+        currentLayoutName = nil
+    end
+
+    print("|cff00ff00Jar's Mouse Action Bars|r: Layout '" .. name .. "' deleted.")
+    return true
 end
 
 -- Create tracker frame with action button mirrors
 local function CreateTrackerFrame()
     local frame = CreateFrame("Frame", "JMAB_Tracker", UIParent)
-    
+
     local iconSize = activeProfile.iconSize or 20
     local spacing = 2
     local buttonsPerRow = activeProfile.buttonsPerRow or 6
     local rows = math.ceil(MAX_BUTTONS / buttonsPerRow)
-    
+
     local frameWidth = iconSize * buttonsPerRow + spacing * (buttonsPerRow - 1)
     local frameHeight = iconSize * rows + spacing * (rows - 1)
     frame:SetSize(frameWidth, frameHeight)
     frame:SetFrameStrata("HIGH")
-    
+
     frame.buttons = {}
-    
+
     for i = 1, MAX_BUTTONS do
         -- Create simple button frame
         local button = CreateFrame("Frame", "JMAB_Button" .. i, frame)
         button:SetSize(iconSize, iconSize)
-        
+
         local row = math.floor((i - 1) / buttonsPerRow)
         local col = (i - 1) % buttonsPerRow
         button:SetPoint("TOPLEFT", frame, "TOPLEFT", col * (iconSize + spacing), -row * (iconSize + spacing))
-        
+
         -- Background
         button.bg = button:CreateTexture(nil, "BACKGROUND")
         button.bg:SetAllPoints()
         button.bg:SetColorTexture(0, 0, 0, 0.5)
-        
+
         -- Border (for active ability highlighting)
         button.border = button:CreateTexture(nil, "OVERLAY")
         button.border:SetAllPoints()
         button.border:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
         button.border:SetBlendMode("ADD")
         button.border:Hide()
-        
+
         -- Icon texture
         button.icon = button:CreateTexture(nil, "ARTWORK")
         button.icon:SetAllPoints()
         button.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-        
+
         -- Cooldown frame
         button.cooldown = CreateFrame("Cooldown", nil, button, "CooldownFrameTemplate")
         button.cooldown:SetAllPoints()
         button.cooldown:SetDrawEdge(false)
-        
+
         -- Count text
         button.count = button:CreateFontString(nil, "OVERLAY")
-        -- Use NumberFontNormal at its natural size, positioned like regular action bars
         local fontName, fontSize, fontFlags = NumberFontNormal:GetFont()
         button.count:SetFont(fontName, fontSize, fontFlags)
         button.count:SetJustifyH("RIGHT")
         button.count:SetJustifyV("BOTTOM")
         button.count:SetPoint("BOTTOMRIGHT", -2, 2)
-        
+
         -- Overlay glow (for spell activation procs)
         button.overlay = CreateFrame("Frame", "JMAB_Button" .. i .. "Overlay", button)
         button.overlay:SetAllPoints(button)
-        
+
         -- Create glow texture
         button.overlay.spark = button.overlay:CreateTexture(nil, "OVERLAY")
         button.overlay.spark:SetTexture("Interface\\SpellActivationOverlay\\IconAlert")
@@ -210,13 +255,13 @@ local function CreateTrackerFrame()
         button.overlay.spark:SetTexCoord(0.00781250, 0.50781250, 0.27734375, 0.52734375)
         button.overlay.spark:SetPoint("CENTER", button, "CENTER", 0, 0)
         button.overlay.spark:SetSize(iconSize * 1.4, iconSize * 1.4)
-        
+
         button.overlay:Hide()
-        
+
         button:Hide()
         frame.buttons[i] = button
     end
-    
+
     -- Frame follows cursor (throttled to reduce flickering)
     frame._lastX = 0
     frame._lastY = 0
@@ -225,10 +270,10 @@ local function CreateTrackerFrame()
         local scale = UIParent:GetEffectiveScale()
         local offsetX = activeProfile.cursorOffsetX or 5
         local offsetY = activeProfile.cursorOffsetY or 5
-        
+
         local newX = (x / scale) + offsetX
         local newY = (y / scale) + offsetY
-        
+
         -- Only update position if cursor moved at least 1 pixel
         if math.abs(newX - self._lastX) > 1 or math.abs(newY - self._lastY) > 1 then
             self:ClearAllPoints()
@@ -237,7 +282,7 @@ local function CreateTrackerFrame()
             self._lastY = newY
         end
     end)
-    
+
     return frame
 end
 
@@ -248,7 +293,7 @@ function RecreateTrackerFrame()
         trackerFrame:SetParent(nil)
         trackerFrame = nil
     end
-    
+
     trackerFrame = CreateTrackerFrame()
     UpdateButtons()
 end
@@ -257,44 +302,41 @@ end
 local updateThrottle = 0
 function UpdateButtons(forceUpdate)
     if not trackerFrame then return end
-    
+
     -- Only throttle timer-based updates, not event-driven ones
     if not forceUpdate then
         local now = GetTime()
-        if now - updateThrottle < 5 then  -- 5 seconds - only flickers once every 5 seconds
+        if now - updateThrottle < 5 then
             return
         end
         updateThrottle = now
     end
-    
+
     for i = 1, MAX_BUTTONS do
         local button = trackerFrame.buttons[i]
         local actionSlot = activeProfile.actionSlots[i]
-        
+
         if actionSlot and actionSlot > 0 then
             local hasAction = HasAction(actionSlot)
-            
+
             if hasAction then
                 -- Get action info
                 local texture = GetActionTexture(actionSlot)
                 local actionType, id = GetActionInfo(actionSlot)
-                
+
                 -- Only update icon texture if it changed
                 if texture and button._lastTexture ~= texture then
                     button.icon:SetTexture(texture)
                     button._lastTexture = texture
                 end
-                
-                -- Update cooldown - native frame handles secrets, no caching needed
+
+                -- Update cooldown
                 if C_ActionBar and C_ActionBar.GetActionCooldown then
-                    -- WoW 12.0+ API - returns table with possibly secret values
                     local cooldownInfo = C_ActionBar.GetActionCooldown(actionSlot)
                     if cooldownInfo and cooldownInfo.startTime and cooldownInfo.duration then
-                        -- Just pass values directly, cooldown frame handles secrets
                         button.cooldown:SetCooldown(cooldownInfo.startTime, cooldownInfo.duration)
                     end
                 else
-                    -- Fallback for older WoW versions
                     local start, duration, enable = GetActionCooldown(actionSlot)
                     if start and duration then
                         button.cooldown:SetCooldown(start, duration)
@@ -303,14 +345,12 @@ function UpdateButtons(forceUpdate)
                 if not button.cooldown:IsShown() then
                     button.cooldown:Show()
                 end
-                
-                -- Update count - just set directly like Bartender4, no caching
+
+                -- Update count
                 if C_ActionBar and C_ActionBar.GetActionDisplayCount then
-                    -- WoW 12.0+ API - directly set whatever it returns (secret-safe)
                     local displayCount = C_ActionBar.GetActionDisplayCount(actionSlot, 9999)
                     button.count:SetText(displayCount)
                 else
-                    -- Fallback for older WoW versions
                     local count = GetActionCount(actionSlot)
                     if count and count > 0 then
                         button.count:SetText(count)
@@ -318,8 +358,8 @@ function UpdateButtons(forceUpdate)
                         button.count:SetText("")
                     end
                 end
-                
-                -- Check usability (can also be secret)
+
+                -- Check usability (can be secret)
                 pcall(function()
                     local isUsable, notEnoughMana = IsUsableAction(actionSlot)
                     local colorKey = isUsable and "usable" or (notEnoughMana and "mana" or "unusable")
@@ -334,8 +374,8 @@ function UpdateButtons(forceUpdate)
                         button._lastColorKey = colorKey
                     end
                 end)
-                
-                -- Check range (can also be secret)
+
+                -- Check range (can be secret)
                 pcall(function()
                     local inRange = IsActionInRange(actionSlot)
                     if inRange == false and button._lastColorKey ~= "range" then
@@ -343,7 +383,7 @@ function UpdateButtons(forceUpdate)
                         button._lastColorKey = "range"
                     end
                 end)
-                
+
                 -- Check if ability is currently active (green border)
                 local isActive = IsCurrentAction(actionSlot)
                 if isActive and not button.border:IsShown() then
@@ -351,7 +391,7 @@ function UpdateButtons(forceUpdate)
                 elseif not isActive and button.border:IsShown() then
                     button.border:Hide()
                 end
-                
+
                 if not button:IsShown() then
                     button:Show()
                 end
@@ -368,10 +408,20 @@ function UpdateButtons(forceUpdate)
     end
 end
 
+-- Get sorted list of layout names for dropdown
+local function GetSortedLayoutNames()
+    local names = {}
+    for name in pairs(JarsMouseActionBarsDB.layouts) do
+        table.insert(names, name)
+    end
+    table.sort(names)
+    return names
+end
+
 -- Create configuration window
 local function CreateConfigFrame()
     local frame = CreateFrame("Frame", "JMAB_ConfigFrame", UIParent, "BasicFrameTemplateWithInset")
-    frame:SetSize(520, 480)
+    frame:SetSize(520, 560)
     frame:SetPoint("CENTER")
     frame:SetMovable(true)
     frame:EnableMouse(true)
@@ -379,45 +429,122 @@ local function CreateConfigFrame()
     frame:SetScript("OnDragStart", frame.StartMoving)
     frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
     frame:Hide()
-    
+
     frame.title = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     frame.title:SetPoint("TOP", 0, -5)
     frame.title:SetText("Jar's Mouse Action Bars Configuration")
-    
-    -- Profile indicator
-    frame.profileLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    frame.profileLabel:SetPoint("TOP", 0, -22)
-    frame.profileLabel:SetTextColor(0.7, 0.7, 0.7)
-    
-    -- Update profile label text
-    local function UpdateProfileLabel()
-        local specIndex = GetSpecialization()
-        if specIndex then
-            local _, specName = GetSpecializationInfo(specIndex)
-            local talentText = ""
-            if C_ClassTalents and C_ClassTalents.GetActiveConfigID then
-                local configID = C_ClassTalents.GetActiveConfigID()
-                if configID then
-                    talentText = " (Loadout " .. configID .. ")"
-                end
-            end
-            frame.profileLabel:SetText("Profile: " .. (specName or "Unknown") .. talentText)
-        else
-            frame.profileLabel:SetText("Profile: Default")
-        end
+
+    -- Current spec and layout indicator
+    frame.specLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    frame.specLabel:SetPoint("TOP", 0, -22)
+    frame.specLabel:SetTextColor(0.7, 0.7, 0.7)
+
+    local function UpdateSpecLabel()
+        local specName = GetCurrentSpecName()
+        local layoutText = currentLayoutName and (": " .. currentLayoutName) or ": (none)"
+        frame.specLabel:SetText("Spec: " .. specName .. " | Layout" .. layoutText)
     end
-    UpdateProfileLabel()
-    
-    -- Update profile label when frame is shown
-    frame:HookScript("OnShow", UpdateProfileLabel)
-    
+    UpdateSpecLabel()
+    frame:HookScript("OnShow", UpdateSpecLabel)
+
+    -- ===== Layout Save/Load Section =====
+    local layoutHeader = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    layoutHeader:SetPoint("TOPLEFT", 20, -40)
+    layoutHeader:SetText("|cffffd700Layout Management|r")
+
+    -- Layout name input
+    local nameLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    nameLabel:SetPoint("TOPLEFT", 20, -58)
+    nameLabel:SetText("Layout Name:")
+
+    local nameBox = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
+    nameBox:SetSize(200, 22)
+    nameBox:SetPoint("LEFT", nameLabel, "RIGHT", 8, 0)
+    nameBox:SetAutoFocus(false)
+    nameBox:SetMaxLetters(50)
+    if currentLayoutName then
+        nameBox:SetText(currentLayoutName)
+    end
+    nameBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+    nameBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+
+    -- Save button
+    local layoutSaveBtn = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
+    layoutSaveBtn:SetSize(70, 22)
+    layoutSaveBtn:SetPoint("LEFT", nameBox, "RIGHT", 5, 0)
+    layoutSaveBtn:SetText("Save")
+    layoutSaveBtn:SetScript("OnClick", function()
+        local name = nameBox:GetText():trim()
+        if SaveLayout(name) then
+            UpdateSpecLabel()
+            -- Refresh dropdown if it exists
+            if frame.layoutDropdown then
+                frame.layoutDropdown:SetDefaultText(name)
+            end
+        end
+    end)
+
+    -- Load dropdown
+    local loadLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    loadLabel:SetPoint("TOPLEFT", 20, -85)
+    loadLabel:SetText("Load Layout:")
+
+    local layoutDropdown = CreateFrame("DropdownButton", nil, frame, "WowStyle1DropdownTemplate")
+    layoutDropdown:SetPoint("LEFT", loadLabel, "RIGHT", 5, 0)
+    layoutDropdown:SetWidth(200)
+    layoutDropdown:SetDefaultText(currentLayoutName or "Select a layout...")
+    frame.layoutDropdown = layoutDropdown
+
+    layoutDropdown:SetupMenu(function(_, rootDescription)
+        local names = GetSortedLayoutNames()
+        if #names == 0 then
+            rootDescription:CreateTitle("No saved layouts")
+            return
+        end
+        for _, name in ipairs(names) do
+            rootDescription:CreateButton(name, function()
+                if LoadLayout(name) then
+                    nameBox:SetText(name)
+                    layoutDropdown:SetDefaultText(name)
+                    UpdateSpecLabel()
+                    -- Reload UI to reflect new layout data
+                    if frame.Reload then
+                        frame:Reload()
+                    end
+                end
+            end)
+        end
+    end)
+
+    -- Delete button
+    local deleteBtn = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
+    deleteBtn:SetSize(70, 22)
+    deleteBtn:SetPoint("LEFT", layoutDropdown, "RIGHT", 5, 0)
+    deleteBtn:SetText("Delete")
+    deleteBtn:SetScript("OnClick", function()
+        local name = nameBox:GetText():trim()
+        if name ~= "" and JarsMouseActionBarsDB.layouts[name] then
+            DeleteLayout(name)
+            nameBox:SetText("")
+            layoutDropdown:SetDefaultText("Select a layout...")
+            UpdateSpecLabel()
+        else
+            print("|cff00ff00Jar's Mouse Action Bars|r: Enter the name of a layout to delete.")
+        end
+    end)
+
+    -- ===== Settings Section =====
+    local settingsHeader = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    settingsHeader:SetPoint("TOPLEFT", 20, -115)
+    settingsHeader:SetText("|cffffd700Display Settings|r")
+
     -- Icon Size slider
     local sizeLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    sizeLabel:SetPoint("TOPLEFT", 20, -35)
+    sizeLabel:SetPoint("TOPLEFT", 20, -135)
     sizeLabel:SetText("Icon Size: " .. (activeProfile.iconSize or 20))
-    
+
     local sizeSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
-    sizeSlider:SetPoint("TOPLEFT", 20, -55)
+    sizeSlider:SetPoint("TOPLEFT", 20, -155)
     sizeSlider:SetMinMaxValues(20, 64)
     sizeSlider:SetValue(activeProfile.iconSize or 20)
     sizeSlider:SetValueStep(2)
@@ -430,16 +557,16 @@ local function CreateConfigFrame()
         sizeLabel:SetText("Icon Size: " .. math.floor(value))
         RecreateTrackerFrame()
     end)
-    
+
     -- Cursor Offset X slider
     local offsetXLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    offsetXLabel:SetPoint("TOPLEFT", 220, -35)
-    offsetXLabel:SetText("Cursor Offset X: " .. (activeProfile.cursorOffsetX or 5))
-    
+    offsetXLabel:SetPoint("TOPLEFT", 220, -135)
+    offsetXLabel:SetText("Cursor Offset X: " .. (activeProfile.cursorOffsetX or 40))
+
     local offsetXSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
-    offsetXSlider:SetPoint("TOPLEFT", 220, -55)
+    offsetXSlider:SetPoint("TOPLEFT", 220, -155)
     offsetXSlider:SetMinMaxValues(-200, 200)
-    offsetXSlider:SetValue(activeProfile.cursorOffsetX or 5)
+    offsetXSlider:SetValue(activeProfile.cursorOffsetX or 40)
     offsetXSlider:SetValueStep(1)
     offsetXSlider:SetObeyStepOnDrag(true)
     offsetXSlider:SetWidth(200)
@@ -449,16 +576,16 @@ local function CreateConfigFrame()
         activeProfile.cursorOffsetX = value
         offsetXLabel:SetText("Cursor Offset X: " .. math.floor(value))
     end)
-    
+
     -- Cursor Offset Y slider
     local offsetYLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    offsetYLabel:SetPoint("TOPLEFT", 20, -100)
-    offsetYLabel:SetText("Cursor Offset Y: " .. (activeProfile.cursorOffsetY or 5))
-    
+    offsetYLabel:SetPoint("TOPLEFT", 20, -200)
+    offsetYLabel:SetText("Cursor Offset Y: " .. (activeProfile.cursorOffsetY or -30))
+
     local offsetYSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
-    offsetYSlider:SetPoint("TOPLEFT", 20, -120)
+    offsetYSlider:SetPoint("TOPLEFT", 20, -220)
     offsetYSlider:SetMinMaxValues(-200, 200)
-    offsetYSlider:SetValue(activeProfile.cursorOffsetY or 5)
+    offsetYSlider:SetValue(activeProfile.cursorOffsetY or -30)
     offsetYSlider:SetValueStep(1)
     offsetYSlider:SetObeyStepOnDrag(true)
     offsetYSlider:SetWidth(150)
@@ -468,14 +595,14 @@ local function CreateConfigFrame()
         activeProfile.cursorOffsetY = value
         offsetYLabel:SetText("Cursor Offset Y: " .. math.floor(value))
     end)
-    
+
     -- Buttons Per Row slider
     local rowLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    rowLabel:SetPoint("TOPLEFT", 220, -100)
+    rowLabel:SetPoint("TOPLEFT", 220, -200)
     rowLabel:SetText("Buttons Per Row: " .. (activeProfile.buttonsPerRow or 6))
-    
+
     local rowSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
-    rowSlider:SetPoint("TOPLEFT", 220, -120)
+    rowSlider:SetPoint("TOPLEFT", 220, -220)
     rowSlider:SetMinMaxValues(3, 12)
     rowSlider:SetValue(activeProfile.buttonsPerRow or 6)
     rowSlider:SetValueStep(1)
@@ -488,40 +615,39 @@ local function CreateConfigFrame()
         rowLabel:SetText("Buttons Per Row: " .. math.floor(value))
         RecreateTrackerFrame()
     end)
-    
-    -- Action Button Slots Section
+
+    -- ===== Action Slots Section =====
     local slotsHeader = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    slotsHeader:SetPoint("TOPLEFT", 20, -165)
+    slotsHeader:SetPoint("TOPLEFT", 20, -265)
     slotsHeader:SetText("|cffffd700Action Bar Slots to Mirror|r")
-    
+
     local slotsLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    slotsLabel:SetPoint("TOPLEFT", 20, -185)
+    slotsLabel:SetPoint("TOPLEFT", 20, -285)
     slotsLabel:SetText("Enter action slot numbers (1-120):")
-    
+
     local infoLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    infoLabel:SetPoint("TOPLEFT", 20, -200)
+    infoLabel:SetPoint("TOPLEFT", 20, -300)
     infoLabel:SetText("Bar 1: 1-12 | Bar 2: 13-24 | Bar 3: 25-36 | Bar 4: 37-48 | Bar 5: 49-60 | Bar 6: 61-72")
-    
+
     -- Action slot inputs in grid
     local inputBoxes = {}
     for i = 1, MAX_BUTTONS do
         local box = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
         box:SetSize(50, 25)
-        
+
         local row = math.floor((i - 1) / 6)
         local col = (i - 1) % 6
-        box:SetPoint("TOPLEFT", 20 + (col * 70), -225 - (row * 30))
-        
+        box:SetPoint("TOPLEFT", 20 + (col * 70), -325 - (row * 30))
+
         box:SetAutoFocus(false)
         box:SetNumeric(true)
         box:SetMaxLetters(3)
-        
-        -- Store the slot index on the box itself
+
         box.slotIndex = i
-        
+
         local slotNum = activeProfile.actionSlots[i] or 0
         box:SetText(slotNum > 0 and tostring(slotNum) or "")
-        
+
         box:SetScript("OnEnterPressed", function(self)
             local value = tonumber(self:GetText()) or 0
             if value > 120 then value = 120 end
@@ -533,29 +659,29 @@ local function CreateConfigFrame()
             self:SetText(activeProfile.actionSlots[self.slotIndex] or "")
             self:ClearFocus()
         end)
-        
+
         inputBoxes[i] = box
     end
-    
-    -- Save button
-    local saveBtn = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
-    saveBtn:SetSize(120, 25)
-    saveBtn:SetPoint("BOTTOMLEFT", 20, 20)
-    saveBtn:SetText("Save & Update")
-    saveBtn:SetScript("OnClick", function()
+
+    -- Bottom buttons
+    local applyBtn = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
+    applyBtn:SetSize(120, 25)
+    applyBtn:SetPoint("BOTTOMLEFT", 20, 20)
+    applyBtn:SetText("Apply Changes")
+    applyBtn:SetScript("OnClick", function()
         for i = 1, MAX_BUTTONS do
             local value = tonumber(inputBoxes[i]:GetText()) or 0
             if value > 120 then value = 120 end
             activeProfile.actionSlots[i] = value
         end
         UpdateButtons(true)
-        print("|cff00ff00Jar's Mouse Action Bars|r Configuration saved to profile: " .. currentProfile)
+        print("|cff00ff00Jar's Mouse Action Bars|r: Changes applied. Save a layout to persist them.")
     end)
-    
+
     -- Clear button
     local clearBtn = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
     clearBtn:SetSize(100, 25)
-    clearBtn:SetPoint("LEFT", saveBtn, "RIGHT", 10, 0)
+    clearBtn:SetPoint("LEFT", applyBtn, "RIGHT", 10, 0)
     clearBtn:SetText("Clear All")
     clearBtn:SetScript("OnClick", function()
         for i = 1, MAX_BUTTONS do
@@ -564,7 +690,7 @@ local function CreateConfigFrame()
         end
         UpdateButtons()
     end)
-    
+
     -- Default button
     local defaultBtn = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
     defaultBtn:SetSize(100, 25)
@@ -577,35 +703,41 @@ local function CreateConfigFrame()
             activeProfile.actionSlots[i] = defaults[i]
         end
         UpdateButtons()
-        print("|cff00ff00Jar's Mouse Action Bars|r Loaded default slots")
+        print("|cff00ff00Jar's Mouse Action Bars|r: Default slots loaded. Save a layout to persist.")
     end)
-    
-    -- Add Reload method to refresh UI with current profile data
+
+    -- Reload method to refresh UI with current profile data
     frame.Reload = function()
         -- Update action slot inputs
         for i = 1, MAX_BUTTONS do
             local slotNum = activeProfile.actionSlots[i] or 0
             inputBoxes[i]:SetText(slotNum > 0 and tostring(slotNum) or "")
         end
-        
-        -- Update sliders to reflect current profile settings
+
+        -- Update sliders
         sizeSlider:SetValue(activeProfile.iconSize or 20)
         sizeLabel:SetText("Icon Size: " .. (activeProfile.iconSize or 20))
-        
+
         offsetXSlider:SetValue(activeProfile.cursorOffsetX or 40)
         offsetXLabel:SetText("Cursor Offset X: " .. (activeProfile.cursorOffsetX or 40))
-        
+
         offsetYSlider:SetValue(activeProfile.cursorOffsetY or -30)
         offsetYLabel:SetText("Cursor Offset Y: " .. (activeProfile.cursorOffsetY or -30))
-        
+
         rowSlider:SetValue(activeProfile.buttonsPerRow or 6)
         rowLabel:SetText("Buttons Per Row: " .. (activeProfile.buttonsPerRow or 6))
+
+        -- Update layout name and labels
+        nameBox:SetText(currentLayoutName or "")
+        layoutDropdown:SetDefaultText(currentLayoutName or "Select a layout...")
+        UpdateSpecLabel()
     end
-    
+
     return frame
 end
 
 -- Event handler
+local lastSpecID = nil
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
@@ -623,40 +755,46 @@ eventFrame:RegisterEvent("UNIT_AURA")
 eventFrame:RegisterEvent("PLAYER_ENTER_COMBAT")
 eventFrame:RegisterEvent("PLAYER_LEAVE_COMBAT")
 eventFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
-eventFrame:RegisterEvent("TRAIT_CONFIG_UPDATED")
-eventFrame:RegisterEvent("TRAIT_CONFIG_LIST_UPDATED")
-eventFrame:RegisterEvent("CONFIG_COMMIT_FAILED")
-eventFrame:RegisterEvent("PLAYER_TALENT_UPDATE")
-eventFrame:RegisterEvent("ACTIVE_TALENT_GROUP_CHANGED")
 
 eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" then
         local addonName = ...
         if addonName == "JarsMouseActionBars" then
-            -- Profile system doesn't need InitDB anymore
+            InitDB()
         end
     elseif event == "PLAYER_LOGIN" then
-        -- Initialize saved variables
-        LoadProfile()
-        
+        -- Load the layout associated with current spec (or empty)
+        LoadSpecLayout()
+        lastSpecID = GetCurrentSpecID()
+
         print("|cff00ff00Jar's Mouse Action Bars|r loaded. Type /jmab for options.")
-        
+
         -- Create frames
         trackerFrame = CreateTrackerFrame()
         configFrame = CreateConfigFrame()
-        
+
         -- Initial update
         C_Timer.After(1, UpdateButtons)
-    
-    elseif event == "PLAYER_SPECIALIZATION_CHANGED" or event == "TRAIT_CONFIG_UPDATED" or event == "TRAIT_CONFIG_LIST_UPDATED" or event == "CONFIG_COMMIT_FAILED" or event == "PLAYER_TALENT_UPDATE" or event == "ACTIVE_TALENT_GROUP_CHANGED" then
-        -- Load the appropriate profile for the new spec/talent configuration
-        local newProfileKey = GetCurrentProfileKey()
-        if newProfileKey ~= currentProfile then
-            print(string.format("|cff00ff00Jar's Mouse Action Bars|r Switching profile: %s -> %s (Event: %s)", currentProfile or "none", newProfileKey, event))
-            LoadProfile(newProfileKey)
+
+    elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
+        -- Only react if spec actually changed
+        local newSpecID = GetCurrentSpecID()
+        if newSpecID and newSpecID ~= lastSpecID then
+            lastSpecID = newSpecID
+            LoadSpecLayout()
+
+            -- Recreate tracker frame for new layout
+            if trackerFrame then
+                RecreateTrackerFrame()
+            end
+
+            -- Update config frame if visible
+            if configFrame and configFrame:IsShown() and configFrame.Reload then
+                configFrame:Reload()
+            end
         end
-        
-    elseif event == "ACTIONBAR_SLOT_CHANGED" or 
+
+    elseif event == "ACTIONBAR_SLOT_CHANGED" or
            event == "SPELL_UPDATE_COOLDOWN" or
            event == "SPELL_UPDATE_CHARGES" or
            event == "ACTIONBAR_UPDATE_STATE" or
@@ -667,7 +805,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
            event == "PLAYER_ENTER_COMBAT" or
            event == "PLAYER_LEAVE_COMBAT" or
            event == "ACTIONBAR_UPDATE_COOLDOWN" then
-        UpdateButtons(true)  -- Force update, skip throttle
+        UpdateButtons(true)
     elseif event == "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW" then
         local spellID = ...
         if trackerFrame and spellID then
@@ -723,7 +861,7 @@ SLASH_JARSMOUSEACTIONBARS1 = "/jmab"
 SLASH_JARSMOUSEACTIONBARS2 = "/jarsmouseactionbars"
 SlashCmdList["JARSMOUSEACTIONBARS"] = function(msg)
     msg = msg:lower():trim()
-    
+
     if msg == "config" or msg == "" then
         if configFrame then
             configFrame:SetShown(not configFrame:IsShown())
@@ -740,30 +878,24 @@ SlashCmdList["JARSMOUSEACTIONBARS"] = function(msg)
             end
         end
         print("|cff00ff00Scan complete!|r")
-    elseif msg == "profile" or msg == "debug" then
-        local profileKey = GetCurrentProfileKey()
-        local specIndex = GetSpecialization()
-        local specID, specName = GetSpecializationInfo(specIndex or 0)
-        local configID = C_ClassTalents and C_ClassTalents.GetActiveConfigID and C_ClassTalents.GetActiveConfigID() or "nil"
-        
-        print("|cff00ff00Jar's Mouse Action Bars|r Profile Debug:")
-        print("  Current Profile Key: " .. (currentProfile or "none"))
-        print("  Calculated Profile Key: " .. profileKey)
-        print("  Spec Index: " .. (specIndex or "nil"))
-        print("  Spec ID: " .. (specID or "nil"))
-        print("  Spec Name: " .. (specName or "nil"))
-        print("  Talent Config ID: " .. tostring(configID))
-        if JarsMouseActionBarsDB.profiles then
-            print("  Available Profiles:")
-            for key, _ in pairs(JarsMouseActionBarsDB.profiles) do
-                print("    - " .. key .. (key == currentProfile and " (active)" or ""))
-            end
+    elseif msg == "debug" then
+        local specID = GetCurrentSpecID()
+        print("|cff00ff00Jar's Mouse Action Bars|r Debug:")
+        print("  Current Spec: " .. GetCurrentSpecName() .. " (ID: " .. tostring(specID) .. ")")
+        print("  Current Layout: " .. (currentLayoutName or "(none)"))
+        print("  Saved Layouts (" .. CountLayouts() .. "/" .. MAX_LAYOUTS .. "):")
+        for _, name in ipairs(GetSortedLayoutNames()) do
+            print("    - " .. name)
+        end
+        print("  Spec Associations:")
+        for sid, layoutName in pairs(JarsMouseActionBarsDB.specAssociations) do
+            print("    - Spec " .. sid .. " -> " .. layoutName)
         end
     else
         print("|cff00ff00Jar's Mouse Action Bars|r Commands:")
         print("  /jmab - Open configuration window")
         print("  /jmab config - Open configuration window")
         print("  /jmab scan - Scan all slots to find your actions")
-        print("  /jmab profile - Show current profile information")
+        print("  /jmab debug - Show layout and spec association info")
     end
 end
