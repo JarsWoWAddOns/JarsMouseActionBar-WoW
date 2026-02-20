@@ -8,6 +8,30 @@ local MAX_LAYOUTS = 100
 -- Saved variables (per-character)
 JarsMouseActionBarsDB = JarsMouseActionBarsDB or {}
 
+-- Modern dark UI color palette
+local UI = {
+    bg        = { 0.10, 0.10, 0.12, 0.95 },
+    header    = { 0.13, 0.13, 0.16, 1 },
+    accent    = { 0.30, 0.75, 0.75, 1 },
+    accentDim = { 0.20, 0.50, 0.50, 1 },
+    text      = { 0.90, 0.90, 0.90, 1 },
+    textDim   = { 0.55, 0.55, 0.58, 1 },
+    border    = { 0.22, 0.22, 0.26, 1 },
+    sliderBg  = { 0.18, 0.18, 0.22, 1 },
+    sliderFill= { 0.30, 0.75, 0.75, 0.6 },
+    btnNormal = { 0.18, 0.18, 0.22, 1 },
+    btnHover  = { 0.24, 0.24, 0.28, 1 },
+    btnPress  = { 0.14, 0.14, 0.17, 1 },
+    checkOn   = { 0.30, 0.75, 0.75, 1 },
+    checkOff  = { 0.22, 0.22, 0.26, 1 },
+}
+
+local modernBackdrop = {
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    edgeFile = "Interface\\Buttons\\WHITE8X8",
+    edgeSize = 1,
+}
+
 -- Active layout state
 local currentLayoutName = nil  -- Name of the currently loaded layout (nil = empty/no layout)
 local activeProfile = {}       -- The actual layout data being used
@@ -201,7 +225,8 @@ local function CreateTrackerFrame()
     local frameWidth = iconSize * buttonsPerRow + spacing * (buttonsPerRow - 1)
     local frameHeight = iconSize * rows + spacing * (rows - 1)
     frame:SetSize(frameWidth, frameHeight)
-    frame:SetFrameStrata("HIGH")
+    frame:SetFrameStrata("TOOLTIP")
+    frame:SetFrameLevel(128)
 
     frame.buttons = {}
 
@@ -418,26 +443,166 @@ local function GetSortedLayoutNames()
     return names
 end
 
+-- Helper: Modern slider
+local function CreateModernSlider(parent, name, labelText, minVal, maxVal, curVal, step, width, formatFunc, onChange)
+    local container = CreateFrame("Frame", nil, parent)
+    container:SetSize(width, 40)
+
+    local label = container:CreateFontString(nil, "OVERLAY")
+    label:SetFont("Fonts\\FRIZQT__.TTF", 11, "")
+    label:SetTextColor(unpack(UI.text))
+    label:SetPoint("TOPLEFT", 0, 0)
+    label:SetText(labelText)
+
+    local valueText = container:CreateFontString(nil, "OVERLAY")
+    valueText:SetFont("Fonts\\FRIZQT__.TTF", 11, "")
+    valueText:SetTextColor(unpack(UI.accent))
+    valueText:SetPoint("TOPRIGHT", 0, 0)
+    valueText:SetText(formatFunc(curVal))
+
+    local slider = CreateFrame("Slider", name, container, "MinimalSliderTemplate")
+    slider:SetPoint("TOPLEFT", 0, -18)
+    slider:SetSize(width, 14)
+    slider:SetMinMaxValues(minVal, maxVal)
+    slider:SetValueStep(step)
+    slider:SetObeyStepOnDrag(true)
+    slider:SetValue(curVal)
+
+    -- Track background
+    local trackBg = slider:CreateTexture(nil, "BACKGROUND")
+    trackBg:SetPoint("LEFT", 0, 0)
+    trackBg:SetPoint("RIGHT", 0, 0)
+    trackBg:SetHeight(4)
+    trackBg:SetColorTexture(unpack(UI.sliderBg))
+
+    -- Fill texture
+    local fill = slider:CreateTexture(nil, "ARTWORK")
+    fill:SetPoint("LEFT", trackBg, "LEFT", 0, 0)
+    fill:SetHeight(4)
+    fill:SetColorTexture(unpack(UI.sliderFill))
+
+    -- Thumb
+    local thumb = slider:GetThumbTexture()
+    if thumb then
+        thumb:SetSize(14, 14)
+        thumb:SetColorTexture(unpack(UI.accent))
+    end
+
+    local function UpdateFill()
+        local min, max = slider:GetMinMaxValues()
+        local val = slider:GetValue()
+        local pct = (val - min) / (max - min)
+        fill:SetWidth(math.max(1, pct * width))
+    end
+    UpdateFill()
+
+    slider:SetScript("OnValueChanged", function(self, value)
+        valueText:SetText(formatFunc(value))
+        UpdateFill()
+        onChange(value)
+    end)
+
+    container.slider = slider
+    container.valueText = valueText
+    container.label = label
+    return container
+end
+
+-- Helper: Modern button
+local function CreateModernButton(parent, text, width, height, onClick)
+    local btn = CreateFrame("Button", nil, parent, "BackdropTemplate")
+    btn:SetSize(width, height)
+    btn:SetBackdrop(modernBackdrop)
+    btn:SetBackdropColor(unpack(UI.btnNormal))
+    btn:SetBackdropBorderColor(unpack(UI.border))
+
+    btn.label = btn:CreateFontString(nil, "OVERLAY")
+    btn.label:SetFont("Fonts\\FRIZQT__.TTF", 11, "")
+    btn.label:SetTextColor(unpack(UI.text))
+    btn.label:SetPoint("CENTER", 0, 0)
+    btn.label:SetText(text)
+
+    btn.SetText = function(_, t) btn.label:SetText(t) end
+
+    btn:SetScript("OnEnter", function(self) self:SetBackdropColor(unpack(UI.btnHover)) end)
+    btn:SetScript("OnLeave", function(self) self:SetBackdropColor(unpack(UI.btnNormal)) end)
+    btn:SetScript("OnMouseDown", function(self) self:SetBackdropColor(unpack(UI.btnPress)) end)
+    btn:SetScript("OnMouseUp", function(self) self:SetBackdropColor(unpack(UI.btnHover)) end)
+    btn:SetScript("OnClick", onClick)
+
+    return btn
+end
+
+-- Helper: Section header
+local function CreateSectionHeader(parent, text)
+    local container = CreateFrame("Frame", nil, parent)
+    container:SetSize(parent:GetWidth() or 380, 20)
+
+    local label = container:CreateFontString(nil, "OVERLAY")
+    label:SetFont("Fonts\\FRIZQT__.TTF", 10, "")
+    label:SetTextColor(unpack(UI.textDim))
+    label:SetPoint("LEFT", 0, 0)
+    label:SetText(string.upper(text))
+
+    local line = container:CreateTexture(nil, "ARTWORK")
+    line:SetHeight(1)
+    line:SetPoint("LEFT", label, "RIGHT", 8, 0)
+    line:SetPoint("RIGHT", container, "RIGHT", 0, 0)
+    line:SetColorTexture(unpack(UI.border))
+
+    return container
+end
+
 -- Create configuration window
 local function CreateConfigFrame()
-    local frame = CreateFrame("Frame", "JMAB_ConfigFrame", UIParent, "BasicFrameTemplateWithInset")
-    frame:SetSize(520, 560)
+    local frame = CreateFrame("Frame", "JMAB_ConfigFrame", UIParent, "BackdropTemplate")
+    frame:SetSize(560, 660)
     frame:SetPoint("CENTER")
+    frame:SetBackdrop(modernBackdrop)
+    frame:SetBackdropColor(unpack(UI.bg))
+    frame:SetBackdropBorderColor(unpack(UI.border))
     frame:SetMovable(true)
     frame:EnableMouse(true)
     frame:RegisterForDrag("LeftButton")
     frame:SetScript("OnDragStart", frame.StartMoving)
     frame:SetScript("OnDragStop", frame.StopMovingOrSizing)
+    frame:SetFrameStrata("DIALOG")
     frame:Hide()
+    tinsert(UISpecialFrames, "JMAB_ConfigFrame")
 
-    frame.title = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    frame.title:SetPoint("TOP", 0, -5)
-    frame.title:SetText("Jar's Mouse Action Bars Configuration")
+    -- Title bar
+    local titleBar = CreateFrame("Frame", nil, frame, "BackdropTemplate")
+    titleBar:SetHeight(32)
+    titleBar:SetPoint("TOPLEFT", 0, 0)
+    titleBar:SetPoint("TOPRIGHT", 0, 0)
+    titleBar:SetBackdrop(modernBackdrop)
+    titleBar:SetBackdropColor(unpack(UI.header))
+    titleBar:SetBackdropBorderColor(unpack(UI.border))
+
+    local titleText = titleBar:CreateFontString(nil, "OVERLAY")
+    titleText:SetFont("Fonts\\FRIZQT__.TTF", 13, "")
+    titleText:SetTextColor(unpack(UI.accent))
+    titleText:SetPoint("LEFT", 14, 0)
+    titleText:SetText("Jar's Mouse Action Bars")
+
+    -- Close  button
+    local closeBtn = CreateFrame("Button", nil, titleBar)
+    closeBtn:SetSize(32, 32)
+    closeBtn:SetPoint("RIGHT", -2, 0)
+    local closeTxt = closeBtn:CreateFontString(nil, "OVERLAY")
+    closeTxt:SetFont("Fonts\\FRIZQT__.TTF", 13, "")
+    closeTxt:SetTextColor(unpack(UI.textDim))
+    closeTxt:SetPoint("CENTER")
+    closeTxt:SetText("x")
+    closeBtn:SetScript("OnEnter", function() closeTxt:SetTextColor(1, 0.4, 0.4, 1) end)
+    closeBtn:SetScript("OnLeave", function() closeTxt:SetTextColor(unpack(UI.textDim)) end)
+    closeBtn:SetScript("OnClick", function() frame:Hide() end)
 
     -- Current spec and layout indicator
-    frame.specLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    frame.specLabel:SetPoint("TOP", 0, -22)
-    frame.specLabel:SetTextColor(0.7, 0.7, 0.7)
+    frame.specLabel = frame:CreateFontString(nil, "OVERLAY")
+    frame.specLabel:SetFont("Fonts\\FRIZQT__.TTF", 10, "")
+    frame.specLabel:SetTextColor(unpack(UI.textDim))
+    frame.specLabel:SetPoint("TOP", titleBar, "BOTTOM", 0, -4)
 
     local function UpdateSpecLabel()
         local specName = GetCurrentSpecName()
@@ -447,19 +612,36 @@ local function CreateConfigFrame()
     UpdateSpecLabel()
     frame:HookScript("OnShow", UpdateSpecLabel)
 
-    -- ===== Layout Save/Load Section =====
-    local layoutHeader = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    layoutHeader:SetPoint("TOPLEFT", 20, -40)
-    layoutHeader:SetText("|cffffd700Layout Management|r")
+    -- Scroll frame
+    local scrollFrame = CreateFrame("ScrollFrame", nil, frame, "UIPanelScrollFrameTemplate")
+    scrollFrame:SetPoint("TOPLEFT", 20, -54)
+    scrollFrame:SetPoint("BOTTOMRIGHT", -30, 12)
+
+    local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+    scrollChild:SetSize(490, 1)
+    scrollFrame:SetScrollChild(scrollChild)
+
+    local contentWidth = 480
+    local yOff = 0
+    local function nextY(h) yOff = yOff - h; return yOff end
+
+    -- =====================
+    -- LAYOUT MANAGEMENT
+    -- =====================
+    local sec1 = CreateSectionHeader(scrollChild, "Layout Management")
+    sec1:SetSize(contentWidth, 20)
+    sec1:SetPoint("TOPLEFT", 0, nextY(0))
 
     -- Layout name input
-    local nameLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    nameLabel:SetPoint("TOPLEFT", 20, -58)
-    nameLabel:SetText("Layout Name:")
+    local nameLabel = scrollChild:CreateFontString(nil, "OVERLAY")
+    nameLabel:SetFont("Fonts\\FRIZQT__.TTF", 11, "")
+    nameLabel:SetTextColor(unpack(UI.text))
+    nameLabel:SetPoint("TOPLEFT", 0, nextY(28))
+    nameLabel:SetText("Layout Name")
 
-    local nameBox = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
-    nameBox:SetSize(200, 22)
-    nameBox:SetPoint("LEFT", nameLabel, "RIGHT", 8, 0)
+    local nameBox = CreateFrame("EditBox", nil, scrollChild, "InputBoxTemplate")
+    nameBox:SetSize(200, 25)
+    nameBox:SetPoint("TOPLEFT", 0, nextY(24))
     nameBox:SetAutoFocus(false)
     nameBox:SetMaxLetters(50)
     if currentLayoutName then
@@ -469,28 +651,27 @@ local function CreateConfigFrame()
     nameBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
 
     -- Save button
-    local layoutSaveBtn = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
-    layoutSaveBtn:SetSize(70, 22)
-    layoutSaveBtn:SetPoint("LEFT", nameBox, "RIGHT", 5, 0)
-    layoutSaveBtn:SetText("Save")
-    layoutSaveBtn:SetScript("OnClick", function()
+    local layoutSaveBtn = CreateModernButton(scrollChild, "Save", 100, 25, function()
         local name = nameBox:GetText():trim()
         if SaveLayout(name) then
             UpdateSpecLabel()
-            -- Refresh dropdown if it exists
             if frame.layoutDropdown then
+                frame.layoutDropdown:GenerateMenu()
                 frame.layoutDropdown:SetDefaultText(name)
             end
         end
     end)
+    layoutSaveBtn:SetPoint("LEFT", nameBox, "RIGHT", 8, 0)
 
     -- Load dropdown
-    local loadLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    loadLabel:SetPoint("TOPLEFT", 20, -85)
-    loadLabel:SetText("Load Layout:")
+    local loadLabel = scrollChild:CreateFontString(nil, "OVERLAY")
+    loadLabel:SetFont("Fonts\\FRIZQT__.TTF", 11, "")
+    loadLabel:SetTextColor(unpack(UI.text))
+    loadLabel:SetPoint("TOPLEFT", 0, nextY(34))
+    loadLabel:SetText("Load Layout")
 
-    local layoutDropdown = CreateFrame("DropdownButton", nil, frame, "WowStyle1DropdownTemplate")
-    layoutDropdown:SetPoint("LEFT", loadLabel, "RIGHT", 5, 0)
+    local layoutDropdown = CreateFrame("DropdownButton", nil, scrollChild, "WowStyle1DropdownTemplate")
+    layoutDropdown:SetPoint("TOPLEFT", 0, nextY(20))
     layoutDropdown:SetWidth(200)
     layoutDropdown:SetDefaultText(currentLayoutName or "Select a layout...")
     frame.layoutDropdown = layoutDropdown
@@ -507,7 +688,6 @@ local function CreateConfigFrame()
                     nameBox:SetText(name)
                     layoutDropdown:SetDefaultText(name)
                     UpdateSpecLabel()
-                    -- Reload UI to reflect new layout data
                     if frame.Reload then
                         frame:Reload()
                     end
@@ -517,132 +697,93 @@ local function CreateConfigFrame()
     end)
 
     -- Delete button
-    local deleteBtn = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
-    deleteBtn:SetSize(70, 22)
-    deleteBtn:SetPoint("LEFT", layoutDropdown, "RIGHT", 5, 0)
-    deleteBtn:SetText("Delete")
-    deleteBtn:SetScript("OnClick", function()
+    local deleteBtn = CreateModernButton(scrollChild, "Delete", 100, 25, function()
         local name = nameBox:GetText():trim()
         if name ~= "" and JarsMouseActionBarsDB.layouts[name] then
             DeleteLayout(name)
             nameBox:SetText("")
+            layoutDropdown:GenerateMenu()
             layoutDropdown:SetDefaultText("Select a layout...")
             UpdateSpecLabel()
         else
             print("|cff00ff00Jar's Mouse Action Bars|r: Enter the name of a layout to delete.")
         end
     end)
+    deleteBtn:SetPoint("LEFT", layoutDropdown, "RIGHT", 8, 0)
 
-    -- ===== Settings Section =====
-    local settingsHeader = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    settingsHeader:SetPoint("TOPLEFT", 20, -115)
-    settingsHeader:SetText("|cffffd700Display Settings|r")
+    -- =====================
+    -- DISPLAY SETTINGS
+    -- =====================
+    local sec2 = CreateSectionHeader(scrollChild, "Display Settings")
+    sec2:SetSize(contentWidth, 20)
+    sec2:SetPoint("TOPLEFT", 0, nextY(36))
 
     -- Icon Size slider
-    local sizeLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    sizeLabel:SetPoint("TOPLEFT", 20, -135)
-    sizeLabel:SetText("Icon Size: " .. (activeProfile.iconSize or 20))
-
-    local sizeSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
-    sizeSlider:SetPoint("TOPLEFT", 20, -155)
-    sizeSlider:SetMinMaxValues(20, 64)
-    sizeSlider:SetValue(activeProfile.iconSize or 20)
-    sizeSlider:SetValueStep(2)
-    sizeSlider:SetObeyStepOnDrag(true)
-    sizeSlider:SetWidth(150)
-    sizeSlider.Low:SetText("20")
-    sizeSlider.High:SetText("64")
-    sizeSlider:SetScript("OnValueChanged", function(self, value)
-        activeProfile.iconSize = value
-        sizeLabel:SetText("Icon Size: " .. math.floor(value))
-        RecreateTrackerFrame()
-    end)
-
-    -- Cursor Offset X slider
-    local offsetXLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    offsetXLabel:SetPoint("TOPLEFT", 220, -135)
-    offsetXLabel:SetText("Cursor Offset X: " .. (activeProfile.cursorOffsetX or 40))
-
-    local offsetXSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
-    offsetXSlider:SetPoint("TOPLEFT", 220, -155)
-    offsetXSlider:SetMinMaxValues(-200, 200)
-    offsetXSlider:SetValue(activeProfile.cursorOffsetX or 40)
-    offsetXSlider:SetValueStep(1)
-    offsetXSlider:SetObeyStepOnDrag(true)
-    offsetXSlider:SetWidth(200)
-    offsetXSlider.Low:SetText("-200")
-    offsetXSlider.High:SetText("200")
-    offsetXSlider:SetScript("OnValueChanged", function(self, value)
-        activeProfile.cursorOffsetX = value
-        offsetXLabel:SetText("Cursor Offset X: " .. math.floor(value))
-    end)
-
-    -- Cursor Offset Y slider
-    local offsetYLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    offsetYLabel:SetPoint("TOPLEFT", 20, -200)
-    offsetYLabel:SetText("Cursor Offset Y: " .. (activeProfile.cursorOffsetY or -30))
-
-    local offsetYSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
-    offsetYSlider:SetPoint("TOPLEFT", 20, -220)
-    offsetYSlider:SetMinMaxValues(-200, 200)
-    offsetYSlider:SetValue(activeProfile.cursorOffsetY or -30)
-    offsetYSlider:SetValueStep(1)
-    offsetYSlider:SetObeyStepOnDrag(true)
-    offsetYSlider:SetWidth(150)
-    offsetYSlider.Low:SetText("-200")
-    offsetYSlider.High:SetText("200")
-    offsetYSlider:SetScript("OnValueChanged", function(self, value)
-        activeProfile.cursorOffsetY = value
-        offsetYLabel:SetText("Cursor Offset Y: " .. math.floor(value))
-    end)
+    local sizeSlider = CreateModernSlider(scrollChild, "JMAB_SizeSlider", "Icon Size",
+        20, 64, activeProfile.iconSize or 20, 2, contentWidth,
+        function(v) return tostring(math.floor(v)) end,
+        function(value)
+            activeProfile.iconSize = value
+            RecreateTrackerFrame()
+        end)
+    sizeSlider:SetPoint("TOPLEFT", 0, nextY(28))
 
     -- Buttons Per Row slider
-    local rowLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    rowLabel:SetPoint("TOPLEFT", 220, -200)
-    rowLabel:SetText("Buttons Per Row: " .. (activeProfile.buttonsPerRow or 6))
+    local rowSlider = CreateModernSlider(scrollChild, "JMAB_RowSlider", "Buttons Per Row",
+        3, 12, activeProfile.buttonsPerRow or 6, 1, contentWidth,
+        function(v) return tostring(math.floor(v)) end,
+        function(value)
+            activeProfile.buttonsPerRow = value
+            RecreateTrackerFrame()
+        end)
+    rowSlider:SetPoint("TOPLEFT", 0, nextY(48))
 
-    local rowSlider = CreateFrame("Slider", nil, frame, "OptionsSliderTemplate")
-    rowSlider:SetPoint("TOPLEFT", 220, -220)
-    rowSlider:SetMinMaxValues(3, 12)
-    rowSlider:SetValue(activeProfile.buttonsPerRow or 6)
-    rowSlider:SetValueStep(1)
-    rowSlider:SetObeyStepOnDrag(true)
-    rowSlider:SetWidth(200)
-    rowSlider.Low:SetText("3")
-    rowSlider.High:SetText("12")
-    rowSlider:SetScript("OnValueChanged", function(self, value)
-        activeProfile.buttonsPerRow = value
-        rowLabel:SetText("Buttons Per Row: " .. math.floor(value))
-        RecreateTrackerFrame()
-    end)
+    -- Cursor Offset X slider
+    local offsetXSlider = CreateModernSlider(scrollChild, "JMAB_OffsetXSlider", "Cursor Offset X",
+        -200, 200, activeProfile.cursorOffsetX or 40, 1, contentWidth,
+        function(v) return tostring(math.floor(v)) end,
+        function(value)
+            activeProfile.cursorOffsetX = value
+        end)
+    offsetXSlider:SetPoint("TOPLEFT", 0, nextY(48))
 
-    -- ===== Action Slots Section =====
-    local slotsHeader = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    slotsHeader:SetPoint("TOPLEFT", 20, -265)
-    slotsHeader:SetText("|cffffd700Action Bar Slots to Mirror|r")
+    -- Cursor Offset Y slider
+    local offsetYSlider = CreateModernSlider(scrollChild, "JMAB_OffsetYSlider", "Cursor Offset Y",
+        -200, 200, activeProfile.cursorOffsetY or -30, 1, contentWidth,
+        function(v) return tostring(math.floor(v)) end,
+        function(value)
+            activeProfile.cursorOffsetY = value
+        end)
+    offsetYSlider:SetPoint("TOPLEFT", 0, nextY(48))
 
-    local slotsLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    slotsLabel:SetPoint("TOPLEFT", 20, -285)
-    slotsLabel:SetText("Enter action slot numbers (1-120):")
+    -- =====================
+    -- ACTION SLOTS
+    -- =====================
+    local sec3 = CreateSectionHeader(scrollChild, "Action Bar Slots to Mirror")
+    sec3:SetSize(contentWidth, 20)
+    sec3:SetPoint("TOPLEFT", 0, nextY(52))
 
-    local infoLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    infoLabel:SetPoint("TOPLEFT", 20, -300)
-    infoLabel:SetText("Bar 1: 1-12 | Bar 2: 13-24 | Bar 3: 25-36 | Bar 4: 37-48 | Bar 5: 49-60 | Bar 6: 61-72")
+    local slotsLabel = scrollChild:CreateFontString(nil, "OVERLAY")
+    slotsLabel:SetFont("Fonts\\FRIZQT__.TTF", 10, "")
+    slotsLabel:SetTextColor(unpack(UI.textDim))
+    slotsLabel:SetPoint("TOPLEFT", 0, nextY(24))
+    slotsLabel:SetText("Enter action slot numbers (1-120). Bar 1: 1-12 | Bar 2: 13-24 | Bar 3: 25-36 | Bar 4: 37-48")
 
     -- Action slot inputs in grid
     local inputBoxes = {}
+    nextY(24)
+    local gridStartY = yOff
     for i = 1, MAX_BUTTONS do
-        local box = CreateFrame("EditBox", nil, frame, "InputBoxTemplate")
+        local box = CreateFrame("EditBox", nil, scrollChild, "InputBoxTemplate")
         box:SetSize(50, 25)
 
         local row = math.floor((i - 1) / 6)
         local col = (i - 1) % 6
-        box:SetPoint("TOPLEFT", 20 + (col * 70), -325 - (row * 30))
+        box:SetPoint("TOPLEFT", col * 70, gridStartY - (row * 32))
 
         box:SetAutoFocus(false)
         box:SetNumeric(true)
         box:SetMaxLetters(3)
-
         box.slotIndex = i
 
         local slotNum = activeProfile.actionSlots[i] or 0
@@ -663,12 +804,17 @@ local function CreateConfigFrame()
         inputBoxes[i] = box
     end
 
-    -- Bottom buttons
-    local applyBtn = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
-    applyBtn:SetSize(120, 25)
-    applyBtn:SetPoint("BOTTOMLEFT", 20, 20)
-    applyBtn:SetText("Apply Changes")
-    applyBtn:SetScript("OnClick", function()
+    yOff = gridStartY - (2 * 32) - 16  -- Account for 2 rows of inputs
+    nextY(0)
+
+    -- =====================
+    -- ACTIONS
+    -- =====================
+    local sec4 = CreateSectionHeader(scrollChild, "Actions")
+    sec4:SetSize(contentWidth, 20)
+    sec4:SetPoint("TOPLEFT", 0, nextY(28))
+
+    local applyBtn = CreateModernButton(scrollChild, "Apply Changes", 140, 28, function()
         for i = 1, MAX_BUTTONS do
             local value = tonumber(inputBoxes[i]:GetText()) or 0
             if value > 120 then value = 120 end
@@ -677,26 +823,18 @@ local function CreateConfigFrame()
         UpdateButtons(true)
         print("|cff00ff00Jar's Mouse Action Bars|r: Changes applied. Save a layout to persist them.")
     end)
+    applyBtn:SetPoint("TOPLEFT", 0, nextY(28))
 
-    -- Clear button
-    local clearBtn = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
-    clearBtn:SetSize(100, 25)
-    clearBtn:SetPoint("LEFT", applyBtn, "RIGHT", 10, 0)
-    clearBtn:SetText("Clear All")
-    clearBtn:SetScript("OnClick", function()
+    local clearBtn = CreateModernButton(scrollChild, "Clear All", 120, 28, function()
         for i = 1, MAX_BUTTONS do
             inputBoxes[i]:SetText("")
             activeProfile.actionSlots[i] = 0
         end
         UpdateButtons()
     end)
+    clearBtn:SetPoint("LEFT", applyBtn, "RIGHT", 8, 0)
 
-    -- Default button
-    local defaultBtn = CreateFrame("Button", nil, frame, "GameMenuButtonTemplate")
-    defaultBtn:SetSize(100, 25)
-    defaultBtn:SetPoint("LEFT", clearBtn, "RIGHT", 10, 0)
-    defaultBtn:SetText("Load Default")
-    defaultBtn:SetScript("OnClick", function()
+    local defaultBtn = CreateModernButton(scrollChild, "Load Default", 120, 28, function()
         local defaults = {1, 2, 3, 4, 5, 6, 13, 14, 15, 16, 17, 18}
         for i = 1, MAX_BUTTONS do
             inputBoxes[i]:SetText(tostring(defaults[i]))
@@ -705,8 +843,12 @@ local function CreateConfigFrame()
         UpdateButtons()
         print("|cff00ff00Jar's Mouse Action Bars|r: Default slots loaded. Save a layout to persist.")
     end)
+    defaultBtn:SetPoint("LEFT", clearBtn, "RIGHT", 8, 0)
 
-    -- Reload method to refresh UI with current profile data
+    -- Set scroll child height
+    scrollChild:SetHeight(math.abs(yOff) + 40)
+
+-- Reload method to refresh UI with current profile data
     frame.Reload = function()
         -- Update action slot inputs
         for i = 1, MAX_BUTTONS do
@@ -715,20 +857,21 @@ local function CreateConfigFrame()
         end
 
         -- Update sliders
-        sizeSlider:SetValue(activeProfile.iconSize or 20)
-        sizeLabel:SetText("Icon Size: " .. (activeProfile.iconSize or 20))
+        sizeSlider.slider:SetValue(activeProfile.iconSize or 20)
+        sizeSlider.valueText:SetText(tostring(activeProfile.iconSize or 20))
 
-        offsetXSlider:SetValue(activeProfile.cursorOffsetX or 40)
-        offsetXLabel:SetText("Cursor Offset X: " .. (activeProfile.cursorOffsetX or 40))
+        offsetXSlider.slider:SetValue(activeProfile.cursorOffsetX or 40)
+        offsetXSlider.valueText:SetText(tostring(activeProfile.cursorOffsetX or 40))
 
-        offsetYSlider:SetValue(activeProfile.cursorOffsetY or -30)
-        offsetYLabel:SetText("Cursor Offset Y: " .. (activeProfile.cursorOffsetY or -30))
+        offsetYSlider.slider:SetValue(activeProfile.cursorOffsetY or -30)
+        offsetYSlider.valueText:SetText(tostring(activeProfile.cursorOffsetY or -30))
 
-        rowSlider:SetValue(activeProfile.buttonsPerRow or 6)
-        rowLabel:SetText("Buttons Per Row: " .. (activeProfile.buttonsPerRow or 6))
+        rowSlider.slider:SetValue(activeProfile.buttonsPerRow or 6)
+        rowSlider.valueText:SetText(tostring(activeProfile.buttonsPerRow or 6))
 
         -- Update layout name and labels
         nameBox:SetText(currentLayoutName or "")
+        layoutDropdown:GenerateMenu()
         layoutDropdown:SetDefaultText(currentLayoutName or "Select a layout...")
         UpdateSpecLabel()
     end
