@@ -265,9 +265,9 @@ local function CreateTrackerFrame()
         button.count = button:CreateFontString(nil, "OVERLAY")
         local fontName, fontSize, fontFlags = NumberFontNormal:GetFont()
         button.count:SetFont(fontName, fontSize, fontFlags)
-        button.count:SetJustifyH("RIGHT")
-        button.count:SetJustifyV("BOTTOM")
-        button.count:SetPoint("BOTTOMRIGHT", -2, 2)
+        button.count:SetJustifyH("CENTER")
+        button.count:SetJustifyV("MIDDLE")
+        button.count:SetPoint("CENTER", 0, 0)
 
         -- Overlay glow (for spell activation procs)
         button.overlay = CreateFrame("Frame", "JMAB_Button" .. i .. "Overlay", button)
@@ -355,33 +355,33 @@ function UpdateButtons(forceUpdate)
                     button._lastTexture = texture
                 end
 
-                -- Update cooldown
-                if C_ActionBar and C_ActionBar.GetActionCooldown then
-                    local cooldownInfo = C_ActionBar.GetActionCooldown(actionSlot)
-                    if cooldownInfo and cooldownInfo.startTime and cooldownInfo.duration then
-                        button.cooldown:SetCooldown(cooldownInfo.startTime, cooldownInfo.duration)
+                -- Cooldown sweep: use plain values tracked from UNIT_SPELLCAST_SUCCEEDED.
+                -- GetTime() and GetSpellBaseCooldown() return plain Lua numbers (not secret-typed)
+                -- so SetCooldown accepts them regardless of addon taint.
+                local spellId = (actionType == "spell") and id or nil
+                if spellId and spellCastTimes[spellId] then
+                    local castTime = spellCastTimes[spellId]
+                    local baseCdMs = GetSpellBaseCooldown(spellId)
+                    local baseCd = baseCdMs and (baseCdMs / 1000) or 0
+                    if baseCd > 1.5 and (castTime + baseCd) > GetTime() then
+                        button.cooldown:SetCooldown(castTime, baseCd)
+                        button.cooldown:Show()
+                    else
+                        button.cooldown:SetCooldown(0, 0)
+                        button.cooldown:Hide()
                     end
                 else
-                    local start, duration, enable = GetActionCooldown(actionSlot)
-                    if start and duration then
-                        button.cooldown:SetCooldown(start, duration)
-                    end
-                end
-                if not button.cooldown:IsShown() then
-                    button.cooldown:Show()
+                    button.cooldown:SetCooldown(0, 0)
+                    button.cooldown:Hide()
                 end
 
                 -- Update count
                 if C_ActionBar and C_ActionBar.GetActionDisplayCount then
-                    local displayCount = C_ActionBar.GetActionDisplayCount(actionSlot, 9999)
-                    button.count:SetText(displayCount)
+                    local dc = C_ActionBar.GetActionDisplayCount(actionSlot, 9999)
+                    button.count:SetText(dc)
                 else
                     local count = GetActionCount(actionSlot)
-                    if count and count > 0 then
-                        button.count:SetText(count)
-                    else
-                        button.count:SetText("")
-                    end
+                    button.count:SetText(count)
                 end
 
                 -- Check usability (can be secret)
@@ -881,9 +881,11 @@ end
 
 -- Event handler
 local lastSpecID = nil
+local spellCastTimes = {}  -- spellId -> GetTime() of last cast, for plain-value cooldown tracking
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
+eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
 eventFrame:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
 eventFrame:RegisterEvent("SPELL_UPDATE_COOLDOWN")
 eventFrame:RegisterEvent("SPELL_UPDATE_CHARGES")
@@ -937,6 +939,11 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             end
         end
 
+    elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
+        local unit, _, spellId = ...
+        if unit == "player" and spellId then
+            spellCastTimes[spellId] = GetTime()
+        end
     elseif event == "ACTIONBAR_SLOT_CHANGED" or
            event == "SPELL_UPDATE_COOLDOWN" or
            event == "SPELL_UPDATE_CHARGES" or
