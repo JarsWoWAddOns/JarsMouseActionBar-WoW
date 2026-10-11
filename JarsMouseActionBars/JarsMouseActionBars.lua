@@ -41,25 +41,35 @@ local trackerFrame
 local configFrame
 local RecreateTrackerFrame
 local UpdateButtons
+local buttonsDirty = true
+
+-- icon tint per state
+local ICON_COLORS = {
+    usable   = { 1, 1, 1 },
+    mana     = { 0.5, 0.5, 1 },
+    unusable = { 0.4, 0.4, 0.4 },
+    range    = { 1, 0, 0 },
+}
 
 -- Get current spec ID (simple helper, no talent hashing)
 local function GetCurrentSpecID()
-    local specIndex = GetSpecialization()
+    local specIndex = C_SpecializationInfo.GetSpecialization()
     if not specIndex then return nil end
-    local specID = GetSpecializationInfo(specIndex)
+    local specID = C_SpecializationInfo.GetSpecializationInfo(specIndex)
     return specID
 end
 
 -- Get current spec name for display
 local function GetCurrentSpecName()
-    local specIndex = GetSpecialization()
+    local specIndex = C_SpecializationInfo.GetSpecialization()
     if not specIndex then return "Unknown" end
-    local _, specName = GetSpecializationInfo(specIndex)
+    local _, specName = C_SpecializationInfo.GetSpecializationInfo(specIndex)
     return specName or "Unknown"
 end
 
 -- Initialize saved variables structure
 local function InitDB()
+    JarsMouseActionBarsDB = JarsMouseActionBarsDB or {}
     if not JarsMouseActionBarsDB.layouts then
         JarsMouseActionBarsDB.layouts = {}
     end
@@ -213,10 +223,8 @@ local function DeleteLayout(name)
     return true
 end
 
--- Create tracker frame with action button mirrors
-local function CreateTrackerFrame()
-    local frame = CreateFrame("Frame", "JMAB_Tracker", UIParent)
-
+-- size + grid, safe to call any time (plain frames, nothing secure here)
+local function LayoutTrackerFrame(frame)
     local iconSize = activeProfile.iconSize or 20
     local spacing = 2
     local buttonsPerRow = activeProfile.buttonsPerRow or 6
@@ -225,6 +233,21 @@ local function CreateTrackerFrame()
     local frameWidth = iconSize * buttonsPerRow + spacing * (buttonsPerRow - 1)
     local frameHeight = iconSize * rows + spacing * (rows - 1)
     frame:SetSize(frameWidth, frameHeight)
+
+    for i = 1, MAX_BUTTONS do
+        local button = frame.buttons[i]
+        button:SetSize(iconSize, iconSize)
+        local row = math.floor((i - 1) / buttonsPerRow)
+        local col = (i - 1) % buttonsPerRow
+        button:ClearAllPoints()
+        button:SetPoint("TOPLEFT", frame, "TOPLEFT", col * (iconSize + spacing), -row * (iconSize + spacing))
+        button.overlay.spark:SetSize(iconSize * 1.4, iconSize * 1.4)
+    end
+end
+
+-- Create tracker frame with action button mirrors
+local function CreateTrackerFrame()
+    local frame = CreateFrame("Frame", "JMAB_Tracker", UIParent)
     frame:SetFrameStrata("TOOLTIP")
     frame:SetFrameLevel(128)
 
@@ -233,11 +256,6 @@ local function CreateTrackerFrame()
     for i = 1, MAX_BUTTONS do
         -- Create simple button frame
         local button = CreateFrame("Frame", "JMAB_Button" .. i, frame)
-        button:SetSize(iconSize, iconSize)
-
-        local row = math.floor((i - 1) / buttonsPerRow)
-        local col = (i - 1) % buttonsPerRow
-        button:SetPoint("TOPLEFT", frame, "TOPLEFT", col * (iconSize + spacing), -row * (iconSize + spacing))
 
         -- Background
         button.bg = button:CreateTexture(nil, "BACKGROUND")
@@ -279,13 +297,13 @@ local function CreateTrackerFrame()
         button.overlay.spark:SetBlendMode("ADD")
         button.overlay.spark:SetTexCoord(0.00781250, 0.50781250, 0.27734375, 0.52734375)
         button.overlay.spark:SetPoint("CENTER", button, "CENTER", 0, 0)
-        button.overlay.spark:SetSize(iconSize * 1.4, iconSize * 1.4)
 
         button.overlay:Hide()
 
         button:Hide()
         frame.buttons[i] = button
     end
+    LayoutTrackerFrame(frame)
 
     -- Frame follows cursor (throttled to reduce flickering)
     frame._lastX = 0
@@ -311,16 +329,20 @@ local function CreateTrackerFrame()
     return frame
 end
 
--- Recreate tracker frame with new settings
+-- Re-layout tracker frame with new settings (built once, no more rebuilds)
 function RecreateTrackerFrame()
-    if trackerFrame then
-        trackerFrame:Hide()
-        trackerFrame:SetParent(nil)
-        trackerFrame = nil
+    -- if trackerFrame then
+    --     trackerFrame:Hide()
+    --     trackerFrame:SetParent(nil)
+    --     trackerFrame = nil
+    -- end
+    -- trackerFrame = CreateTrackerFrame()
+    if not trackerFrame then return end
+    LayoutTrackerFrame(trackerFrame)
+    for i = 1, MAX_BUTTONS do
+        trackerFrame.buttons[i].overlay:Hide()
     end
-
-    trackerFrame = CreateTrackerFrame()
-    UpdateButtons()
+    UpdateButtons(true)
 end
 
 -- Update buttons to mirror action bar slots
@@ -342,12 +364,10 @@ function UpdateButtons(forceUpdate)
         local actionSlot = activeProfile.actionSlots[i]
 
         if actionSlot and actionSlot > 0 then
-            local hasAction = HasAction(actionSlot)
+            local hasAction = C_ActionBar.HasAction(actionSlot)
 
             if hasAction then
-                -- Get action info
-                local texture = GetActionTexture(actionSlot)
-                local actionType, id = GetActionInfo(actionSlot)
+                local texture = C_ActionBar.GetActionTexture(actionSlot)
 
                 -- Only update icon texture if it changed
                 if texture and button._lastTexture ~= texture then
@@ -355,62 +375,24 @@ function UpdateButtons(forceUpdate)
                     button._lastTexture = texture
                 end
 
-                -- Cooldown sweep: use plain values tracked from UNIT_SPELLCAST_SUCCEEDED.
-                -- GetTime() and GetSpellBaseCooldown() return plain Lua numbers (not secret-typed)
-                -- so SetCooldown accepts them regardless of addon taint.
-                local spellId = (actionType == "spell") and id or nil
-                if spellId and spellCastTimes[spellId] then
-                    local castTime = spellCastTimes[spellId]
-                    local baseCdMs = GetSpellBaseCooldown(spellId)
-                    local baseCd = baseCdMs and (baseCdMs / 1000) or 0
-                    if baseCd > 1.5 and (castTime + baseCd) > GetTime() then
-                        button.cooldown:SetCooldown(castTime, baseCd)
-                        button.cooldown:Show()
-                    else
-                        button.cooldown:SetCooldown(0, 0)
-                        button.cooldown:Hide()
-                    end
-                else
-                    button.cooldown:SetCooldown(0, 0)
-                    button.cooldown:Hide()
+                -- cd sweep from a duration object, works for spells items and macros
+                -- ignoreGCD stands in for the old > 1.5 check
+                button.cooldown:SetCooldownFromDurationObject(C_ActionBar.GetActionCooldownDuration(actionSlot, true))
+
+                -- count can be secret, SetText is fine with that
+                button.count:SetText(C_ActionBar.GetActionDisplayCount(actionSlot, 9999))
+
+                -- usable + range arent secret, range wins like before
+                local isUsable, notEnoughMana = C_ActionBar.IsUsableAction(actionSlot)
+                local inRange = C_ActionBar.IsActionInRange(actionSlot)
+                local colorKey = (inRange == false and "range") or (isUsable and "usable") or (notEnoughMana and "mana") or "unusable"
+                if button._lastColorKey ~= colorKey then
+                    button.icon:SetVertexColor(unpack(ICON_COLORS[colorKey]))
+                    button._lastColorKey = colorKey
                 end
-
-                -- Update count
-                if C_ActionBar and C_ActionBar.GetActionDisplayCount then
-                    local dc = C_ActionBar.GetActionDisplayCount(actionSlot, 9999)
-                    button.count:SetText(dc)
-                else
-                    local count = GetActionCount(actionSlot)
-                    button.count:SetText(count)
-                end
-
-                -- Check usability (can be secret)
-                pcall(function()
-                    local isUsable, notEnoughMana = IsUsableAction(actionSlot)
-                    local colorKey = isUsable and "usable" or (notEnoughMana and "mana" or "unusable")
-                    if button._lastColorKey ~= colorKey then
-                        if isUsable then
-                            button.icon:SetVertexColor(1, 1, 1)
-                        elseif notEnoughMana then
-                            button.icon:SetVertexColor(0.5, 0.5, 1)
-                        else
-                            button.icon:SetVertexColor(0.4, 0.4, 0.4)
-                        end
-                        button._lastColorKey = colorKey
-                    end
-                end)
-
-                -- Check range (can be secret)
-                pcall(function()
-                    local inRange = IsActionInRange(actionSlot)
-                    if inRange == false and button._lastColorKey ~= "range" then
-                        button.icon:SetVertexColor(1, 0, 0)
-                        button._lastColorKey = "range"
-                    end
-                end)
 
                 -- Check if ability is currently active (green border)
-                local isActive = IsCurrentAction(actionSlot)
+                local isActive = C_ActionBar.IsCurrentAction(actionSlot)
                 if isActive and not button.border:IsShown() then
                     button.border:Show()
                 elseif not isActive and button.border:IsShown() then
@@ -830,7 +812,7 @@ local function CreateConfigFrame()
             inputBoxes[i]:SetText("")
             activeProfile.actionSlots[i] = 0
         end
-        UpdateButtons()
+        UpdateButtons(true)
     end)
     clearBtn:SetPoint("LEFT", applyBtn, "RIGHT", 8, 0)
 
@@ -840,7 +822,7 @@ local function CreateConfigFrame()
             inputBoxes[i]:SetText(tostring(defaults[i]))
             activeProfile.actionSlots[i] = defaults[i]
         end
-        UpdateButtons()
+        UpdateButtons(true)
         print("|cff00ff00Jar's Mouse Action Bars|r: Default slots loaded. Save a layout to persist.")
     end)
     defaultBtn:SetPoint("LEFT", clearBtn, "RIGHT", 8, 0)
@@ -881,11 +863,9 @@ end
 
 -- Event handler
 local lastSpecID = nil
-local spellCastTimes = {}  -- spellId -> GetTime() of last cast, for plain-value cooldown tracking
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("ADDON_LOADED")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
-eventFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
 eventFrame:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
 eventFrame:RegisterEvent("SPELL_UPDATE_COOLDOWN")
 eventFrame:RegisterEvent("SPELL_UPDATE_CHARGES")
@@ -896,10 +876,10 @@ eventFrame:RegisterEvent("ACTIONBAR_UPDATE_STATE")
 eventFrame:RegisterEvent("ACTIONBAR_UPDATE_USABLE")
 eventFrame:RegisterEvent("SPELL_UPDATE_USABLE")
 eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
-eventFrame:RegisterEvent("UNIT_AURA")
+eventFrame:RegisterUnitEvent("UNIT_AURA", "player")
 eventFrame:RegisterEvent("PLAYER_ENTER_COMBAT")
 eventFrame:RegisterEvent("PLAYER_LEAVE_COMBAT")
-eventFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+eventFrame:RegisterEvent("ACTIVE_PLAYER_SPECIALIZATION_CHANGED")
 
 eventFrame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" then
@@ -921,7 +901,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
         -- Initial update
         C_Timer.After(1, UpdateButtons)
 
-    elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
+    elseif event == "ACTIVE_PLAYER_SPECIALIZATION_CHANGED" then
         -- Only react if spec actually changed
         local newSpecID = GetCurrentSpecID()
         if newSpecID and newSpecID ~= lastSpecID then
@@ -939,11 +919,6 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             end
         end
 
-    elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
-        local unit, _, spellId = ...
-        if unit == "player" and spellId then
-            spellCastTimes[spellId] = GetTime()
-        end
     elseif event == "ACTIONBAR_SLOT_CHANGED" or
            event == "SPELL_UPDATE_COOLDOWN" or
            event == "SPELL_UPDATE_CHARGES" or
@@ -955,14 +930,16 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
            event == "PLAYER_ENTER_COMBAT" or
            event == "PLAYER_LEAVE_COMBAT" or
            event == "ACTIONBAR_UPDATE_COOLDOWN" then
-        UpdateButtons(true)
+        -- UpdateButtons(true)
+        -- batch these, cd events come in bursts
+        buttonsDirty = true
     elseif event == "SPELL_ACTIVATION_OVERLAY_GLOW_SHOW" then
         local spellID = ...
         if trackerFrame and spellID then
             for i = 1, MAX_BUTTONS do
                 local button = trackerFrame.buttons[i]
                 local actionSlot = activeProfile.actionSlots[i]
-                if actionSlot and HasAction(actionSlot) then
+                if actionSlot and C_ActionBar.HasAction(actionSlot) then
                     local actionType, id = GetActionInfo(actionSlot)
                     if actionType == "spell" and id == spellID then
                         if button.overlay then
@@ -978,7 +955,7 @@ eventFrame:SetScript("OnEvent", function(self, event, ...)
             for i = 1, MAX_BUTTONS do
                 local button = trackerFrame.buttons[i]
                 local actionSlot = activeProfile.actionSlots[i]
-                if actionSlot and HasAction(actionSlot) then
+                if actionSlot and C_ActionBar.HasAction(actionSlot) then
                     local actionType, id = GetActionInfo(actionSlot)
                     if actionType == "spell" and id == spellID then
                         if button.overlay then
@@ -997,6 +974,10 @@ local UPDATE_INTERVAL = 0.1
 
 local updateFrame = CreateFrame("Frame")
 updateFrame:SetScript("OnUpdate", function(self, elapsed)
+    if buttonsDirty and trackerFrame then
+        buttonsDirty = false
+        UpdateButtons(true)
+    end
     updateTimer = updateTimer + elapsed
     if updateTimer >= UPDATE_INTERVAL then
         updateTimer = 0
@@ -1020,8 +1001,7 @@ SlashCmdList["JARSMOUSEACTIONBARS"] = function(msg)
         -- Scan all slots 1-120 to find which have actions
         print("|cff00ff00Scanning all action slots...|r")
         for i = 1, 120 do
-            if HasAction(i) then
-                local texture = GetActionTexture(i)
+            if C_ActionBar.HasAction(i) then
                 local actionType, actionID = GetActionInfo(i)
                 local name = actionType == "spell" and C_Spell.GetSpellName(actionID) or "Unknown"
                 print(string.format("Slot %d: %s (%s)", i, name or "?", actionType or "?"))
@@ -1047,5 +1027,12 @@ SlashCmdList["JARSMOUSEACTIONBARS"] = function(msg)
         print("  /jmab config - Open configuration window")
         print("  /jmab scan - Scan all slots to find your actions")
         print("  /jmab debug - Show layout and spec association info")
+    end
+end
+
+-- for JarsAddonConfig
+function JarsMouseActionBars_OpenConfig()
+    if configFrame then
+        configFrame:Show()
     end
 end
